@@ -85,6 +85,8 @@ sealed class Page {
     data class Alb(val a: Album) : Page()
     data class Art(val name: String, val id: Long, val art: String?) : Page()
     object Rep : Page()
+    data class Plst(val p: PlDef) : Page()
+    object Beats : Page()
 }
 data class Nav(val tab: Int, val page: Page?, val depth: Int)
 
@@ -105,23 +107,36 @@ suspend fun tracks(al: Album): List<Track> {
         .map { Track(it.optString("trackName"), it.optString("artistName"), al.art, it.optString("previewUrl"), al.name, it.optLong("artistId"), al.year, it.optString("trackExplicitness") == "explicit") }
 }
 
-suspend fun photoOf(name: String): String? =
-    get("https://api.deezer.com/search/artist?limit=1&q=${Uri.encode(name)}")?.optJSONArray("data")?.optJSONObject(0)?.optString("picture_xl")
-        ?.takeIf { it.startsWith("http") && !it.contains("/artist//") }
+fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+
+suspend fun photoOf(name: String): String? {
+    val d = get("https://api.deezer.com/search/artist?limit=1&q=${Uri.encode(name)}")?.optJSONArray("data")?.optJSONObject(0) ?: return null
+    val n = norm(d.optString("name")); val m = norm(name)
+    if (n.isEmpty() || m.isEmpty() || !(n == m || n.contains(m) || m.contains(n))) return null
+    return d.optString("picture_xl").takeIf { it.startsWith("http") && !it.contains("/artist//") }
+}
+
+fun toTrack(o: JSONObject) = Track(o.optString("trackName"), o.optString("artistName"), o.optString("artworkUrl100").replace("100x100", "300x300"), o.optString("previewUrl"), o.optString("collectionName"), o.optLong("artistId"), o.optString("releaseDate").take(4), o.optString("trackExplicitness") == "explicit")
 
 suspend fun topSongs(id: Long): List<Track> {
     if (id == 0L) return emptyList()
-    val a = get("https://itunes.apple.com/lookup?id=$id&entity=song&limit=15&country=BR")?.optJSONArray("results") ?: return emptyList()
-    return (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optString("wrapperType") == "track" && it.has("previewUrl") }
-        .map { Track(it.optString("trackName"), it.optString("artistName"), it.optString("artworkUrl100").replace("100x100", "300x300"), it.optString("previewUrl"), it.optString("collectionName"), it.optLong("artistId"), it.optString("releaseDate").take(4), it.optString("trackExplicitness") == "explicit") }
+    for (cc in listOf("BR", "US")) {
+        val a = get("https://itunes.apple.com/lookup?id=$id&entity=song&limit=15&country=$cc")?.optJSONArray("results") ?: continue
+        val l = (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optString("wrapperType") == "track" && it.has("previewUrl") }.map { toTrack(it) }
+        if (l.isNotEmpty()) return l
+    }
+    return emptyList()
 }
 
 suspend fun latest(id: Long): Latest? {
     if (id == 0L) return null
-    val a = get("https://itunes.apple.com/lookup?id=$id&entity=album&limit=6&sort=recent&country=BR")?.optJSONArray("results") ?: return null
-    val o = (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("wrapperType") == "collection" } ?: return null
-    val al = Album(o.optLong("collectionId"), o.optString("collectionName"), o.optString("artistName"), o.optString("artworkUrl100").replace("100x100", "600x600"), o.optString("primaryGenreName"), o.optString("releaseDate").take(4), id)
-    return Latest(al, o.optInt("trackCount"), dataBr(o.optString("releaseDate")))
+    for (cc in listOf("BR", "US")) {
+        val a = get("https://itunes.apple.com/lookup?id=$id&entity=album&limit=6&sort=recent&country=$cc")?.optJSONArray("results") ?: continue
+        val o = (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("wrapperType") == "collection" } ?: continue
+        val al = Album(o.optLong("collectionId"), o.optString("collectionName"), o.optString("artistName"), o.optString("artworkUrl100").replace("100x100", "600x600"), o.optString("primaryGenreName"), o.optString("releaseDate").take(4), id)
+        return Latest(al, o.optInt("trackCount"), dataBr(o.optString("releaseDate")))
+    }
+    return null
 }
 
 suspend fun artistData(name: String, id0: Long): ArtistData = coroutineScope {
@@ -131,6 +146,68 @@ suspend fun artistData(name: String, id0: Long): ArtistData = coroutineScope {
     val lt = async { latest(id) }
     val l = lt.await()
     ArtistData(ph.await(), l?.album, l?.count ?: 0, l?.date ?: "", tp.await())
+}
+
+// ---------- Playlists do beats ----------
+data class PlDef(val id: String, val title: String, val sub: String, val c1: Long, val c2: Long)
+val PLS = listOf(
+    PlDef("global", "Top Global", "As músicas mais tocadas do mundo", 0xFF2A7BFF, 0xFF0B2C8C),
+    PlDef("brasil", "Top Brasil", "O que o Brasil mais escuta", 0xFF19C75A, 0xFF0A6B3A),
+    PlDef("pops", "Top Pops", "Os maiores sucessos do pop", 0xFFFF4FA3, 0xFF8A1E7A),
+    PlDef("rnb", "Melhores R&B", "O melhor do R&B e do soul", 0xFFFF8A1A, 0xFF9A2A0A)
+)
+
+suspend fun chartIds(url: String): List<String> {
+    val f = get(url)?.optJSONObject("feed") ?: return emptyList()
+    f.optJSONArray("results")?.let { a -> return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("id")?.takeIf { x -> x.isNotEmpty() } } }
+    f.optJSONArray("entry")?.let { a -> return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optJSONObject("id")?.optJSONObject("attributes")?.optString("im:id")?.takeIf { x -> x.isNotEmpty() } } }
+    return emptyList()
+}
+
+suspend fun songsByIds(ids: List<String>, cc: String): List<Track> {
+    if (ids.isEmpty()) return emptyList()
+    val a = get("https://itunes.apple.com/lookup?id=${ids.joinToString(",")}&country=$cc")?.optJSONArray("results") ?: return emptyList()
+    val by = (0 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }.associateBy { it.optString("trackId") }
+    return ids.mapNotNull { by[it] }.map { toTrack(it) }
+}
+
+suspend fun searchSongs(term: String, cc: String): List<Track> {
+    val a = get("https://itunes.apple.com/search?entity=song&media=music&limit=50&country=$cc&term=${Uri.encode(term)}")?.optJSONArray("results") ?: return emptyList()
+    return (0 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }.map { toTrack(it) }.distinctBy { norm(it.name + it.artist) }
+}
+
+fun rssNovo(cc: String) = "https://rss.applemarketingtools.com/api/v2/$cc/music/most-played/50/songs.json"
+fun rssGenero(cc: String, g: Int) = "https://itunes.apple.com/$cc/rss/topsongs/limit=50/genre=$g/json"
+
+suspend fun playlistTracks(id: String): List<Track> = coroutineScope {
+    val r: List<Track> = when (id) {
+        "global" -> {
+            val ls = listOf("us", "gb", "br", "mx", "de", "fr").map { cc -> async { songsByIds(chartIds(rssNovo(cc)).take(12), cc.uppercase()) } }.awaitAll()
+            val out = mutableListOf<Track>()
+            for (k in 0 until (ls.maxOfOrNull { it.size } ?: 0)) ls.forEach { l -> l.getOrNull(k)?.let { out.add(it) } }
+            out.distinctBy { norm(it.name + it.artist) }
+        }
+        "brasil" -> songsByIds(chartIds(rssNovo("br")).take(50), "BR").ifEmpty { songsByIds(chartIds(rssGenero("br", 14)).take(50), "BR") }
+        "pops" -> songsByIds(chartIds(rssGenero("us", 14)).take(50), "US")
+        else -> songsByIds(chartIds(rssGenero("us", 15)).take(50), "US")
+    }
+    if (r.isNotEmpty()) r else when (id) {
+        "global" -> searchSongs("top hits", "US")
+        "brasil" -> searchSongs("hits brasil", "BR")
+        "pops" -> searchSongs("pop hits", "US")
+        else -> searchSongs("r&b soul hits", "US")
+    }
+}
+
+// ---------- Os Melhores (perfis em destaque) ----------
+data class Feat(val id: Long, val name: String, val photo: String?)
+val FEAT = listOf(1754597620L to "Tocanna", 1804418508L to "Tuko Moedas", 1831894114L to "Asguizz", 1848389054L to "Porkani", 1766758983L to "Veada", 1755830864L to "Boar Carter")
+
+suspend fun featured(id: Long, slug: String): Feat = coroutineScope {
+    val nm = async { get("https://itunes.apple.com/lookup?id=$id")?.optJSONArray("results")?.optJSONObject(0)?.optString("artistName")?.takeIf { it.isNotEmpty() } }
+    val lt = async { latest(id)?.album?.art }
+    val name = nm.await() ?: slug
+    Feat(id, name, lt.await() ?: photoOf(name))
 }
 
 // ---------- Estatísticas reais do Replay ----------
@@ -296,7 +373,7 @@ val LocalArtist = staticCompositionLocalOf<(String, Long, String?) -> Unit> { { 
 
 @Composable fun Pick(t: String, s: String, b: Brush, w: Int, h: Int, sz: Int, m: Modifier = Modifier, onClick: () -> Unit = {}) =
     Column(m.size(w.dp, h.dp).tap(onClick).clip(RoundedCornerShape(14.dp)).background(b).padding(14.dp), Arrangement.SpaceBetween) {
-        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" Music", 12, 600, Color.White) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" beats", 12, 600, Color.White) }
         Column { T(t, sz, 800, Color.White, ml = 2); T(s, 11, 400, Color.White.copy(alpha = .85f), Modifier.padding(top = 4.dp), 2) }
     }
 
@@ -316,16 +393,31 @@ val LocalArtist = staticCompositionLocalOf<(String, Long, String?) -> Unit> { { 
     HorizontalDivider(color = Color.Gray.copy(alpha = .25f))
 }
 
+@Composable fun PlCard(p: PlDef, m: Modifier = Modifier, onClick: () -> Unit) =
+    Column(m.tap(onClick).aspectRatio(.8f).clip(RoundedCornerShape(14.dp)).background(bg(p.c1, p.c2)).padding(14.dp), Arrangement.SpaceBetween) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" beats", 12, 600, Color.White) }
+        Column { T(p.title.replaceFirst(" ", "\n"), 22, 800, Color.White, ml = 2); T(p.sub, 11, 400, Color.White.copy(alpha = .85f), Modifier.padding(top = 4.dp), 2) }
+    }
+
 typealias Sec = Map<String, List<Album>>
 
 // ---------- Telas ----------
-@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit, mix: (List<Album>) -> Unit) = Scr("Início", { Av() }) {
+@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit, mix: (List<Album>) -> Unit, pls: (PlDef) -> Unit, feat: List<Feat>) = Scr("Início", { Av() }) {
+    val go = LocalArtist.current
     T("Feito para Você", 12, 600, Sub); H("Seleção para Você")
     Rw {
         item { Pick("Mix de\nAmigos", "Card B, Offset, Kendrick Lamar, JID e mais", bg(0xFF2A7BFF, 0xFF0B2C8C), 200, 262, 36, Modifier.enter(0)) { mix(sec["hip hop"].orEmpty()) } }
         item { Pick("Todos os\nTempos", "Replay: suas músicas mais tocadas", bg(0xFFFF3B5C, 0xFFB8002A), 200, 262, 36, Modifier.enter(1), rp) }
         item { Pick("Mix\nRelax", "Faixas calmas para focar", bg(0xFF7AD0C6, 0xFF2F6F8F), 200, 262, 36, Modifier.enter(2)) { mix(sec["electronic"].orEmpty()) } }
     }
+    H("Playlists do beats")
+    Rw { itemsIndexed(PLS) { k, p -> PlCard(p, Modifier.width(165.dp).enter(k)) { pls(p) } } }
+    H("Os Melhores")
+    Rw { itemsIndexed(feat) { k, f ->
+        Column(Modifier.width(96.dp).enter(k).tap { go(f.name, f.id, f.photo) }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Img(f.photo, Modifier.size(96.dp), CircleShape); T(f.name, 12, 600, m = Modifier.padding(top = 6.dp), a = TextAlign.Center)
+        }
+    } }
     H("Tocados Recentemente"); val l = sec["pop"].orEmpty(); Empty(l)
     Rw { itemsIndexed(l) { k, a -> Cv(a, open, Modifier.width(118.dp).enter(k)) } }
     H("Feito para Você")
@@ -449,7 +541,57 @@ typealias Sec = Map<String, List<Album>>
 @Composable fun Glass(i: ImageVector, f: () -> Unit) =
     Box(Modifier.size(38.dp).clip(CircleShape).background(Color.Black.copy(alpha = .3f)).pointerInput(Unit) { detectTapGestures { f() } }, Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
 
-// Perfil do artista (estilo Apple Music)
+@Composable fun PlaylistS(pd: PlDef, pl: Pl, openBeats: () -> Unit, back: () -> Unit) {
+    var tr by remember { mutableStateOf(listOf<Track>()) }; var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(pd.id) { tr = playlistTracks(pd.id); loaded = true }
+    val c1 = Color(pd.c1)
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(bg(pd.c1, pd.c2)).padding(16.dp)) {
+                Row(Modifier.align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(16.dp), Color.White); T(" beats", 13, 600, Color.White) }
+                T(pd.title, 34, 800, Color.White, Modifier.align(Alignment.BottomStart), 2)
+            }
+            T(pd.title, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
+            T("beats", 19, 600, lerp(c1, Color.White, .55f), Modifier.pointerInput(Unit) { detectTapGestures { openBeats() } })
+            T(if (tr.isEmpty()) (if (loaded) "Playlist indisponível no momento" else "Carregando…") else "Playlist · ${tr.size} músicas", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
+            Row(Modifier.padding(vertical = 18.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
+            }
+            tr.forEachIndexed { k, t ->
+                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Img(t.art, Modifier.size(44.dp), RoundedCornerShape(6.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) { T(t.name, 16, 500, Color.White); T(t.artist, 13, 400, Color.White.copy(alpha = .6f)) }
+                    Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = .15f))
+            }
+        }
+        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
+    }
+}
+
+// Perfil da plataforma: só playlists disponíveis
+@Composable fun BeatsS(open: (PlDef) -> Unit, back: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 200.dp)) {
+            Box(Modifier.fillMaxWidth().height(320.dp).background(Brush.verticalGradient(listOf(Color(0xFFFA243C), Color(0xFF5A0A18), Color.Black)))) {
+                Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    T("beats", 48, 800, Color.White, a = TextAlign.Center); T("Playlists oficiais", 14, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 4.dp))
+                }
+            }
+            Row(Modifier.padding(horizontal = 18.dp).padding(top = 18.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { T("Playlists", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+            PLS.chunked(2).forEachIndexed { r, row ->
+                Row(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp), Arrangement.spacedBy(12.dp)) {
+                    row.forEachIndexed { k, p -> PlCard(p, Modifier.weight(1f).enter(r * 2 + k)) { open(p) } }
+                    repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        Box(Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { back() } }
+    }
+}
+
+// Perfil do artista (estilo Apple Music): foto de fundo + blur em degradê atrás dos botões
 @Composable fun ArtistS(p: Page.Art, pl: Pl, open: (Album) -> Unit, back: () -> Unit) {
     val ctx = LocalContext.current
     var d by remember(p) { mutableStateOf<ArtistData?>(null) }
@@ -459,52 +601,62 @@ typealias Sec = Map<String, List<Album>>
     val top = lerp(base, Color.Black, .3f); val bot = lerp(base, Color.Black, .8f)
     val songs = d?.top.orEmpty()
     val lt = d?.latest
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(top, bot)))) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 200.dp)) {
-            Box(Modifier.fillMaxWidth().height(440.dp)) {
-                if (photo != null) AsyncImage(model = photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+    Box(Modifier.fillMaxSize().background(top)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            Box(Modifier.fillMaxWidth().height(560.dp)) {
+                if (photo != null) {
+                    AsyncImage(model = photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+                    // cópia desfocada da foto, revelada em degradê de baixo para cima (sem linha de divisão)
+                    Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent { drawContent(); drawRect(Brush.verticalGradient(0f to Color.Transparent, .5f to Color.Transparent, .85f to Color.Black), blendMode = BlendMode.DstIn) }
+                        .blur(32.dp)) {
+                        AsyncImage(model = photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+                    }
+                }
                 Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .5f to Color.Transparent, 1f to top)))
-                Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .55f to Color.Transparent, .8f to top.copy(alpha = .6f), 1f to top)))
+                Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp).padding(bottom = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .28f)).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.CalendarToday, null, Modifier.size(12.dp), Color.White); T("  Próximos Shows", 11, 600, Color.White)
                     }
                     T(p.name, 36, 700, Color.White, Modifier.padding(top = 8.dp), 2, TextAlign.Center)
-                }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
-                Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(40.dp), Color.Black) }
-                Spacer(Modifier.width(30.dp)); Icon(Icons.Filled.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
-            }
-            if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 20.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
-                Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                    T(d?.latestDate.orEmpty(), 11, 500, Color.White.copy(alpha = .6f)); T(lt.name, 16, 700, Color.White)
-                    T("${d?.latestCount ?: 0} ${if ((d?.latestCount ?: 0) == 1) "música" else "músicas"}", 12, 400, Color.White.copy(alpha = .6f))
-                }
-                Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.Add, null, Modifier.size(18.dp), Color.White) }
-            }
-            Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) { T("Músicas Mais Tocadas", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
-            songs.forEachIndexed { k, t ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).enter(k).tap { pl.play(songs, k) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Img(t.art, Modifier.size(46.dp), RoundedCornerShape(6.dp))
-                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            T(t.name, 16, 600, Color.White, Modifier.weight(1f, false))
-                            if (t.explicit) Box(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = .3f)).padding(horizontal = 4.dp)) { T("E", 10, 700, Color.White) }
-                        }
-                        T(if (t.year.isNotEmpty()) "${t.album} · ${t.year}" else t.album, 13, 400, Color.White.copy(alpha = .6f))
+                    Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
+                        Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(40.dp), Color.Black) }
+                        Spacer(Modifier.width(30.dp)); Icon(Icons.Filled.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
                     }
-                    Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
                 }
             }
-            if (d == null) T("Carregando…", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
+            Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(top, bot))).padding(bottom = 200.dp)) {
+                if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                        T(d?.latestDate.orEmpty(), 11, 500, Color.White.copy(alpha = .6f)); T(lt.name, 16, 700, Color.White)
+                        T("${d?.latestCount ?: 0} ${if ((d?.latestCount ?: 0) == 1) "música" else "músicas"}", 12, 400, Color.White.copy(alpha = .6f))
+                    }
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.Add, null, Modifier.size(18.dp), Color.White) }
+                }
+                Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) { T("Músicas Mais Tocadas", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+                songs.forEachIndexed { k, t ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).enter(k).tap { pl.play(songs, k) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(t.art, Modifier.size(46.dp), RoundedCornerShape(6.dp))
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                T(t.name, 16, 600, Color.White, Modifier.weight(1f, false))
+                                if (t.explicit) Box(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = .3f)).padding(horizontal = 4.dp)) { T("E", 10, 700, Color.White) }
+                            }
+                            T(if (t.year.isNotEmpty()) "${t.album} · ${t.year}" else t.album, 13, 400, Color.White.copy(alpha = .6f))
+                        }
+                        Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                    }
+                }
+                if (d == null) T("Carregando…", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
+            }
         }
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Glass(Icons.Filled.ArrowBackIosNew) { back() }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${p.name} no Music") }, null)) }
+                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${p.name} no beats") }, null)) }
                 Glass(Icons.Filled.MoreHoriz) { }
             }
         }
@@ -561,6 +713,8 @@ typealias Sec = Map<String, List<Album>>
     var tab by remember { mutableStateOf(0) }; var np by remember { mutableStateOf(false) }
     val stack = remember { mutableStateListOf<Page>() }
     val sec = remember { mutableStateMapOf<String, List<Album>>() }
+    val feat = remember { mutableStateListOf<Feat>().apply { addAll(FEAT.map { Feat(it.first, it.second, null) }) } }
+    LaunchedEffect(Unit) { FEAT.forEachIndexed { k, f -> launch { feat[k] = featured(f.first, f.second) } } }
     LaunchedEffect(Unit) { listOf("pop", "hip hop", "r&b", "rock", "electronic").forEach { k -> launch { sec[k] = albums(k) } } }
     BackHandler(np || stack.isNotEmpty()) { if (np) np = false else stack.removeAt(stack.lastIndex) }
     val open: (Album) -> Unit = { stack.add(Page.Alb(it)) }
@@ -570,6 +724,8 @@ typealias Sec = Map<String, List<Album>>
         val t = stack.lastOrNull()
         if (!(t is Page.Art && t.name == n)) stack.add(Page.Art(n, id, art))
     }
+    val openPl: (PlDef) -> Unit = { stack.add(Page.Plst(it)) }
+    val openBeats: () -> Unit = { if (stack.lastOrNull() !is Page.Beats) stack.add(Page.Beats) }
     val sub = { stack.isNotEmpty() }
     CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist) {
         Box(Modifier.fillMaxSize().background(bgc)) {
@@ -585,7 +741,9 @@ typealias Sec = Map<String, List<Album>>
                         is Page.Alb -> AlbumS(pg.a, pl) { back() }
                         is Page.Art -> ArtistS(pg, pl, open) { back() }
                         Page.Rep -> Replay(stats) { back() }
-                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
+                        is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
+                        Page.Beats -> BeatsS(openPl) { back() }
+                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, feat); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
                     }
                 }
             }

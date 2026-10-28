@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class, androidx.compose.animation.ExperimentalAnimationApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.musicclone
 
 import android.media.AudioAttributes
@@ -249,7 +251,7 @@ typealias Sec = Map<String, List<Album>>
     val (c1, _) = rememberPal(al.art); var tr by remember { mutableStateOf(listOf<Track>()) }
     LaunchedEffect(al.id) { tr = tracks(al) }
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), Alignment.CenterHorizontally) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Img(al.art, Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)))
             T(al.name, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
             T(al.artist, 19, 600, lerp(c1, Color.White, .55f)); T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))

@@ -1,3 +1,4 @@
+import java.net.URL
 plugins{
  id("com.android.application")
  id("org.jetbrains.kotlin.android")
@@ -17,7 +18,7 @@ val baixarFonte=tasks.register("baixarFonte"){
  doLast{
   if(!f.exists()||f.length()<1000){
    f.parentFile.mkdirs()
-   java.net.URL("https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf").openStream().use{i->f.outputStream().use{o->i.copyTo(o)}}
+   URL("https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf").openStream().use{i->f.outputStream().use{o->i.copyTo(o)}}
   }
  }
 }

@@ -477,11 +477,11 @@ typealias Sec = Map<String, List<Album>>
                 Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(40.dp), Color.Black) }
                 Spacer(Modifier.width(30.dp)); Icon(Icons.Filled.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
             }
-            if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 20.dp).fillMaxWidth().enter(0).tap { open(lt.album) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Img(lt.album.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
+            if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 20.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
                 Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                    T(lt.date, 11, 500, Color.White.copy(alpha = .6f)); T(lt.album.name, 16, 700, Color.White)
-                    T("${lt.count} ${if (lt.count == 1) "música" else "músicas"}", 12, 400, Color.White.copy(alpha = .6f))
+                    T(d?.latestDate.orEmpty(), 11, 500, Color.White.copy(alpha = .6f)); T(lt.name, 16, 700, Color.White)
+                    T("${d?.latestCount ?: 0} ${if ((d?.latestCount ?: 0) == 1) "música" else "músicas"}", 12, 400, Color.White.copy(alpha = .6f))
                 }
                 Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.Add, null, Modifier.size(18.dp), Color.White) }
             }

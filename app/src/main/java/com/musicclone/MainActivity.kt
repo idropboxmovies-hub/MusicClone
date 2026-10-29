@@ -727,7 +727,30 @@ typealias Sec = Map<String, List<Album>>
 }
 
 // altura do degradê da capa do álbum: ela some atrás do título e termina exatamente nos botões (a partir dali é só o fundo desfocado)
-val ZONA_ALBUM = 170.dp
+val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
+
+// Capa nítida + uma cópia DESFOCADA que invade a capa em degradê:
+//  - `invade`: quanto acima do fim da capa o blur começa a aparecer (aumente = o blur sobe mais na capa)
+//  - `cheio`: a partir daqui até o fim o blur é 100% (fica atrás do título/ícones, nunca sem blur)
+//  - nos últimos BLUR_FUNDE ela se dissolve no fundo desfocado da tela (que é a mesma capa), sem corte
+val BLUR_FUNDE = 40.dp
+@Composable fun CapaBlur(u: String, escuro: Color, invade: Dp, cheio: Dp, m: Modifier = Modifier.fillMaxSize()) {
+    Box(m.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }.drawWithContent {
+        drawContent()
+        val f = BLUR_FUNDE.toPx()
+        drawRect(Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - f, endY = size.height), blendMode = BlendMode.DstIn)
+    }) {
+        Img(hq(u), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
+        Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }.drawWithContent {
+            drawContent()
+            val a = size.height - invade.toPx(); val b = size.height - cheio.toPx()
+            drawRect(Brush.verticalGradient(0f to Color.Transparent, .6f to Color.Black.copy(alpha = .55f), 1f to Color.Black, startY = a, endY = b), blendMode = BlendMode.DstIn)
+        }) {
+            AsyncImage(model = hq(u), contentDescription = null, modifier = Modifier.fillMaxSize().blur(40.dp), contentScale = ContentScale.Crop)
+            Box(Modifier.fillMaxSize().background(escuro.copy(alpha = .35f)))
+        }
+    }
+}
 
 @Composable fun AlbumS(al: Album, pl: Pl, back: () -> Unit) {
     val ctx = LocalContext.current
@@ -739,25 +762,18 @@ val ZONA_ALBUM = 170.dp
         AsyncImage(model = hq(al.art), contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .15f), escuro.copy(alpha = .45f), escuro.copy(alpha = .80f)))))
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            // capa de ponta a ponta; some em degradê atrás do título e termina nos botões
-            Box(Modifier.fillMaxWidth().aspectRatio(.85f)) {
-                Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                    .drawWithContent {
-                        drawContent()
-                        val z = ZONA_ALBUM.toPx()
-                        drawRect(Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - z, endY = size.height), blendMode = BlendMode.DstIn)
-                    }) {
-                    Img(hq(al.art), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
-                }
+            // capa de ponta a ponta; o blur invade a capa e fica por baixo do título E dos ícones (aleatório | Reproduzir | favorita)
+            Box(Modifier.fillMaxWidth().aspectRatio(.72f)) {
+                CapaBlur(al.art, escuro, invade = 320.dp, cheio = 200.dp)
                 Box(Modifier.fillMaxWidth().height(120.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
-                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(ZONA_ALBUM).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .35f)))))
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 22.dp).padding(bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(ZONA_ALBUM).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .3f)))))
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     T(al.name, 28, 800, Color.White, ml = 2, a = TextAlign.Center)
                     ATs(al.artist, "", al.artistId, al.art, 20, 600, lerp(c1, Color.White, .55f))
                     T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
+                    Acoes(tr, pl)   // aleatório | Reproduzir (pílula) | favorita
                 }
             }
-            Acoes(tr, pl)   // aleatório | Reproduzir (pílula) | favorita
             tr.forEachIndexed { k, t ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp).enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                     T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Column(Modifier.weight(1f)) { T(t.name, 16, 500, Color.White); if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 12, 400, Color.White.copy(alpha = .6f)) }; Icon(Icons.Rounded.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
@@ -1204,15 +1220,8 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
             Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
                 if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
                 else Box(Modifier.fillMaxSize()) {
-                    // capa nítida ocupando toda a área acima dos controles; some em degradê só na altura do nome da música
-                    Crossfade(t.art, Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        .drawWithContent {
-                            drawContent()
-                            val z = ZONA_BLUR.toPx()
-                            drawRect(Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - z, endY = size.height), blendMode = BlendMode.DstIn)
-                        }, label = "cv") { u ->
-                        Img(hq(u), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
-                    }
+                    // capa nítida em cima; o blur invade a capa e fica 100% atrás do nome da música, dissolvendo no fundo desfocado
+                    Crossfade(t.art, Modifier.fillMaxSize(), label = "cv") { u -> CapaBlur(u, escuro, invade = 250.dp, cheio = 90.dp) }
                     Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
                     Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(ZONA_BLUR).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .35f)))))
                     Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 4.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {

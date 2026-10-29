@@ -49,6 +49,11 @@ import java.net.URL
 const val SB_URL = "https://qimhsxuvuqpsybcbpuwq.supabase.co"
 const val SB_KEY = "sb_publishable_cW0GTnKr50A4pYrbEtlhmg_HDthwwy7"
 
+// paleta minimalista das telas de entrada e cadastro: preto, branco e cinza
+val Surf = Color(0xFF1C1C1E)    // cartões e campos
+val Surf2 = Color(0xFF2C2C2E)   // ícones e superfícies em destaque
+val Line = Color(0xFF3A3A3C)    // bordas
+
 class SbRes(val code: Int, val body: String) {
     val ok get() = code in 200..299
     fun json(): JSONObject? = runCatching { JSONObject(body) }.getOrNull()
@@ -90,20 +95,36 @@ fun erroPt(r: SbRes): String {
         ec == "weak_password" || (m.contains("password") && m.contains("character")) -> "A senha precisa ter pelo menos 6 caracteres."
         ec.contains("rate") || m.contains("rate limit") || m.contains("too many") -> "Muitas tentativas. Espere um pouco e tente de novo."
         ec == "validation_failed" || m.contains("valid email") || m.contains("invalid email") -> "Email inválido."
+        ec == "signup_disabled" || m.contains("signups not allowed") -> "Cadastros estão desativados no Supabase (Authentication > Sign In / Providers > permitir novos usuários)."
+        ec == "email_address_invalid" || m.contains("is invalid") -> "Este email não é aceito. Use um email real."
+        ec == "email_address_not_authorized" -> "O envio de emails do Supabase só aceita emails da equipe. Desligue Confirm email ou configure um SMTP."
+        ec == "over_email_send_rate_limit" || ec == "over_request_rate_limit" -> "Muitas tentativas. Espere um pouco e tente de novo."
         m.contains("database error") -> "Não foi possível criar o perfil. Esse artista pode já ter sido reivindicado."
-        else -> "Algo deu errado (${r.code}). Tente de novo."
+        // mostra o motivo real que o servidor devolveu, para dar para diagnosticar
+        else -> "Algo deu errado (${r.code}${if (ec.isNotEmpty()) " · $ec" else ""})${if (m.isNotEmpty()) ": " + m.take(140) else ""}"
     }
 }
 
-class Prof(val id: String, val role: String, val name: String, val photo: String?, val category: String?, val itunesId: Long, val claimed: Boolean) {
+class Prof(val id: String, val role: String, val name: String, val photo: String?, val category: String?, val itunesId: Long, val claimed: Boolean, val featured: Track? = null) {
     val artist get() = role == "artist"
 }
 
 fun JSONObject.toProf() = Prof(
     optString("id"), optString("role"), optString("display_name"),
     js(this, "photo_url").ifEmpty { null }, js(this, "artist_category").ifEmpty { null },
-    optLong("itunes_artist_id", 0L), optBoolean("claimed", false)
+    optLong("itunes_artist_id", 0L), optBoolean("claimed", false),
+    optJSONObject("featured")?.toTrackOrNull()
 )
+
+// música em destaque do perfil (guardada como JSON na coluna "featured")
+fun JSONObject.toTrackOrNull(): Track? {
+    val n = optString("name"); val u = optString("url")
+    if (n.isEmpty() || u.isEmpty()) return null
+    return Track(n, optString("artist"), optString("art"), u, optString("album"), optLong("artistId", 0L), optString("year"), optBoolean("explicit", false), optInt("dur", 0))
+}
+
+fun Track.toJson(): JSONObject = JSONObject().put("name", name).put("artist", artist).put("art", art).put("url", url)
+    .put("album", album).put("artistId", artistId).put("year", year).put("explicit", explicit).put("dur", dur)
 
 // o perfil de quem já reivindicou esse artista do iTunes (null = livre)
 suspend fun profileByItunes(id: Long): Prof? {
@@ -206,10 +227,12 @@ class Auth(ctx: Context) {
     }
 
     // salva nome (ignorado pelo servidor em perfil reivindicado) e/ou foto
-    suspend fun save(name: String?, photo: ByteArray?): String? {
+    // featured: nova música em destaque; limpar = true remove a que está
+    suspend fun save(name: String?, photo: ByteArray?, featured: Track? = null, limpar: Boolean = false): String? {
         var url: String? = null
         if (photo != null) url = upload(photo) ?: return "Não foi possível enviar a foto."
         val b = JSONObject().put("p_name", name ?: JSONObject.NULL).put("p_photo", url ?: JSONObject.NULL)
+            .put("p_featured", featured?.toJson() ?: JSONObject.NULL).put("p_clear_featured", limpar)
         val r = authed("POST", "/rest/v1/rpc/update_my_profile", b.toString())
         if (!r.ok) return erroPt(r)
         loadProfile()
@@ -326,40 +349,21 @@ object Sfx {
 }
 
 // fundo cinematográfico: gradiente que respira + orbes + partículas flutuando
-@Composable fun Fundo(c1: Color, c2: Color) {
-    val inf = rememberInfiniteTransition(label = "fundo")
-    val t = inf.animateFloat(0f, 1f, infiniteRepeatable(tween(24000, easing = LinearEasing)), label = "ft")
-    val ph = inf.animateFloat(0f, 1f, infiniteRepeatable(tween(9000, easing = LinearEasing), RepeatMode.Reverse), label = "fp")
-    val ps = remember {
-        val r = kotlin.random.Random(11)
-        List(34) { floatArrayOf(r.nextFloat(), r.nextFloat(), 1f + r.nextInt(3), 2f + r.nextFloat() * 5f, r.nextFloat()) }
-    }
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(Brush.verticalGradient(listOf(c1, c2, Color.Black)))
-        val r = size.width
-        val o1 = Offset(size.width * (.1f + .8f * ph.value), size.height * (.15f + .2f * ph.value))
-        val o2 = Offset(size.width * (.95f - .7f * ph.value), size.height * (.7f - .15f * ph.value))
-        drawCircle(Brush.radialGradient(listOf(lerp(c1, Color.White, .25f).copy(alpha = .5f), Color.Transparent), o1, r), r, o1)
-        drawCircle(Brush.radialGradient(listOf(c2.copy(alpha = .9f), Color.Transparent), o2, r), r, o2)
-        ps.forEach { p ->
-            val y = (p[1] - t.value * p[2] + 3f) % 1f
-            val x = p[0] + .04f * kotlin.math.sin(t.value * 6.2832f * 2f + p[4] * 6.28f)
-            drawCircle(Color.White.copy(alpha = .08f + .22f * p[4]), p[3], Offset(size.width * x, size.height * y))
-        }
-    }
+// fundo liso e preto (os parâmetros ficam só por compatibilidade)
+@Composable fun Fundo(c1: Color = Color.Black, c2: Color = Color.Black) {
+    Box(Modifier.fillMaxSize().background(Color.Black))
 }
 
 @Composable fun Campo(v: String, on: (String) -> Unit, label: String, icon: ImageVector, m: Modifier = Modifier, senha: Boolean = false, kb: KeyboardType = KeyboardType.Text) {
     var foco by remember { mutableStateOf(false) }
     var ver by remember { mutableStateOf(false) }
-    val borda by animateColorAsState(if (foco) Color.White else Color.White.copy(alpha = .16f), tween(250), label = "cb")
-    val esc by animateFloatAsState(if (foco) 1.02f else 1f, spring(.6f, 400f), label = "ce")
-    Row(m.fillMaxWidth().graphicsLayer { scaleX = esc; scaleY = esc }.clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .09f))
-        .border(1.2.dp, borda, RoundedCornerShape(16.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+    val borda by animateColorAsState(if (foco) Color.White else Line, tween(200), label = "cb")
+    Row(m.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Surf)
+        .border(1.dp, borda, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, Modifier.size(20.dp), if (foco) Color.White else Sub)
         Spacer(Modifier.width(12.dp))
         BasicTextField(v, on, Modifier.weight(1f).onFocusChanged { foco = it.isFocused }, singleLine = true,
-            textStyle = TextStyle(color = Color.White, fontSize = 16.sp, fontFamily = Sf), cursorBrush = SolidColor(Red),
+            textStyle = TextStyle(color = Color.White, fontSize = 16.sp, fontFamily = Sf), cursorBrush = SolidColor(Color.White),
             visualTransformation = if (senha && !ver) PasswordVisualTransformation() else VisualTransformation.None,
             keyboardOptions = KeyboardOptions(keyboardType = if (senha) KeyboardType.Password else kb),
             decorationBox = { inner -> if (v.isEmpty()) T(label, 16, 400, Sub); inner() })
@@ -370,8 +374,8 @@ object Sfx {
 @Composable fun Pilula(txt: String, m: Modifier = Modifier, claro: Boolean = true, loading: Boolean = false, icon: ImageVector? = null, compacta: Boolean = false, on: () -> Unit) {
     val cor = if (claro) Color.Black else Color.White
     Row(m.toca { if (!loading) { Sfx.tick(); on() } }.clip(CircleShape)
-        .background(if (claro) Color.White else Color.White.copy(alpha = .14f))
-        .then(if (claro) Modifier else Modifier.border(1.dp, Color.White.copy(alpha = .3f), CircleShape))
+        .background(if (claro) Color.White else Surf)
+        .then(if (claro) Modifier else Modifier.border(1.dp, Line, CircleShape))
         .padding(horizontal = if (compacta) 20.dp else 36.dp, vertical = if (compacta) 10.dp else 15.dp), Arrangement.Center, Alignment.CenterVertically) {
         if (loading) CircularProgressIndicator(Modifier.size(20.dp), cor, 2.dp)
         else {
@@ -393,20 +397,13 @@ object Sfx {
 }
 
 @Composable fun FotoRedonda(u: Any?, tam: Dp, m: Modifier = Modifier, on: () -> Unit) {
-    val inf = rememberInfiniteTransition(label = "fr")
-    val giro = inf.animateFloat(0f, 360f, infiniteRepeatable(tween(6000, easing = LinearEasing)), label = "fg")
-    val pulso by inf.animateFloat(.92f, 1.08f, infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "fpz")
-    Box(m.size(tam + 36.dp).toca { Sfx.pop(); on() }, Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) {
-            drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = .22f), Color.Transparent)), size.minDimension / 2f * pulso)
-            rotate(giro.value) {
-                drawCircle(
-                    Brush.sweepGradient(listOf(Color(0xFFFF3B5C), Color(0xFFB04CFF), Color(0xFF2A7BFF), Color(0xFF19C7A5), Color(0xFFFF3B5C))),
-                    size.minDimension / 2f - 4.dp.toPx(), style = Stroke(4.dp.toPx())
-                )
-            }
+    val pulso by rememberInfiniteTransition(label = "fr").animateFloat(1f, 1.03f, infiniteRepeatable(tween(2000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "fpz")
+    Box(m.size(tam + 24.dp).toca { Sfx.pop(); on() }, Alignment.Center) {
+        // anel fino e cinza que respira de leve
+        Canvas(Modifier.fillMaxSize().graphicsLayer { scaleX = pulso; scaleY = pulso }) {
+            drawCircle(Color.White.copy(alpha = .28f), size.minDimension / 2f - 2.dp.toPx(), style = Stroke(1.5.dp.toPx()))
         }
-        Box(Modifier.size(tam).clip(CircleShape).background(Color.White.copy(alpha = .12f)), Alignment.Center) {
+        Box(Modifier.size(tam).clip(CircleShape).background(Surf), Alignment.Center) {
             if (u != null) AsyncImage(model = u, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Filled.AddAPhoto, null, Modifier.size(44.dp), Color.White)
@@ -421,16 +418,16 @@ object Sfx {
     LaunchedEffect(Unit) { a.animateTo(1f, spring(.5f, 180f)) }
     val inf = rememberInfiniteTransition(label = "cel")
     val onda by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "co")
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .86f * a.value.coerceIn(0f, 1f))).pointerInput(Unit) { detectTapGestures { } }, Alignment.Center) {
-        Canvas(Modifier.size(340.dp)) {
-            for (k in 0..2) {
-                val p = (onda + k / 3f) % 1f
-                drawCircle(Color.White.copy(alpha = (1f - p) * .35f), size.minDimension / 2f * p, center, style = Stroke(3f))
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .96f * a.value.coerceIn(0f, 1f))).pointerInput(Unit) { detectTapGestures { } }, Alignment.Center) {
+        Canvas(Modifier.size(300.dp)) {
+            for (k in 0..1) {
+                val p = (onda + k / 2f) % 1f
+                drawCircle(Color.White.copy(alpha = (1f - p) * .18f), size.minDimension / 2f * p, center, style = Stroke(1.5f))
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 30.dp)) {
-            Box(Modifier.size(110.dp).graphicsLayer { scaleX = a.value; scaleY = a.value }.clip(CircleShape).background(bg(0xFF19C75A, 0xFF0A6B3A)), Alignment.Center) {
-                Icon(Icons.Filled.Check, null, Modifier.size(60.dp), Color.White)
+            Box(Modifier.size(96.dp).graphicsLayer { scaleX = a.value; scaleY = a.value }.clip(CircleShape).background(Color.White), Alignment.Center) {
+                Icon(Icons.Filled.Check, null, Modifier.size(52.dp), Color.Black)
             }
             T(txt, 28, 800, Color.White, Modifier.padding(top = 24.dp), 3, TextAlign.Center)
             T(sub, 15, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 6.dp), 3, TextAlign.Center)
@@ -449,10 +446,10 @@ object Sfx {
     }
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .7f * a.value.coerceIn(0f, 1f))).pointerInput(Unit) { detectTapGestures { fechar() } }, Alignment.Center) {
         Column(Modifier.padding(horizontal = 26.dp).fillMaxWidth().graphicsLayer { val s = .7f + .3f * a.value; scaleX = s; scaleY = s; alpha = a.value.coerceIn(0f, 1f) }
-            .clip(RoundedCornerShape(28.dp)).background(Color(0xFF1A1A1F)).border(1.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(28.dp))
+            .clip(RoundedCornerShape(24.dp)).background(Surf).border(1.dp, Line, RoundedCornerShape(24.dp))
             .pointerInput(Unit) { detectTapGestures { } }.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(84.dp).graphicsLayer { rotationZ = tremor.value }.clip(CircleShape).background(bg(0xFFFF8A1A, 0xFFE8380A)), Alignment.Center) {
-                Icon(Icons.Filled.Lock, null, Modifier.size(42.dp), Color.White)
+            Box(Modifier.size(76.dp).graphicsLayer { rotationZ = tremor.value }.clip(CircleShape).background(Surf2), Alignment.Center) {
+                Icon(Icons.Filled.Lock, null, Modifier.size(36.dp), Color.White)
             }
             T("Perfil reivindicado", 24, 800, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
             T("Este perfil foi reivindicado do iTunes, então o nome não pode ser alterado. Você pode mudar apenas a foto.", 15, 500, Color.White.copy(alpha = .75f), Modifier.padding(top = 8.dp, bottom = 20.dp), 6, TextAlign.Center)
@@ -485,13 +482,13 @@ object Sfx {
 
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.height(56.dp))
-        Box(Modifier.enter(0).size(96.dp).graphicsLayer { scaleX = pulso; scaleY = pulso }.clip(RoundedCornerShape(28.dp)).background(bg(0xFFFF3B5C, 0xFF7A0618)), Alignment.Center) {
-            Icon(Icons.Filled.MusicNote, null, Modifier.size(52.dp), Color.White)
+        Box(Modifier.enter(0).size(88.dp).graphicsLayer { scaleX = pulso; scaleY = pulso }.clip(RoundedCornerShape(26.dp)).background(Color.White), Alignment.Center) {
+            Icon(Icons.Filled.MusicNote, null, Modifier.size(48.dp), Color.Black)
         }
         T("beats", 52, 800, Color.White, Modifier.enter(1).padding(top = 16.dp))
         T("Toda a música. Todos os artistas.", 15, 500, Color.White.copy(alpha = .7f), Modifier.enter(2).padding(top = 4.dp), 2, TextAlign.Center)
         Spacer(Modifier.height(40.dp))
-        aviso?.let { T(it, 14, 600, Color(0xFF7CFFB2), Modifier.padding(bottom = 14.dp), 3, TextAlign.Center) }
+        aviso?.let { T(it, 14, 600, Color.White, Modifier.padding(bottom = 14.dp), 3, TextAlign.Center) }
         Campo(mail, { mail = it }, "Email", Icons.Filled.Email, Modifier.enter(3), kb = KeyboardType.Email)
         Spacer(Modifier.height(12.dp))
         Campo(pass, { pass = it }, "Senha", Icons.Filled.Lock, Modifier.enter(4), senha = true)
@@ -510,8 +507,8 @@ object Sfx {
     val inf = rememberInfiniteTransition(label = "ct")
     val flut by inf.animateFloat(-5f, 5f, infiniteRepeatable(tween(1800 + i * 300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "cf")
     Column(m.graphicsLayer { alpha = e.value.coerceIn(0f, 1f); translationY = (1 - e.value) * 160f + flut * e.value; rotationZ = (1 - e.value) * (if (i == 0) -10f else 10f) }
-        .toca { Sfx.pop(); on() }.heightIn(min = 190.dp).clip(RoundedCornerShape(22.dp)).background(b).padding(16.dp), Arrangement.SpaceBetween) {
-        Box(Modifier.size(52.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f)), Alignment.Center) { Icon(icon, null, Modifier.size(28.dp), Color.White) }
+        .toca { Sfx.pop(); on() }.heightIn(min = 190.dp).clip(RoundedCornerShape(20.dp)).background(Surf).border(1.dp, Line, RoundedCornerShape(20.dp)).padding(16.dp), Arrangement.SpaceBetween) {
+        Box(Modifier.size(48.dp).clip(CircleShape).background(Color.White), Alignment.Center) { Icon(icon, null, Modifier.size(26.dp), Color.Black) }
         Column {
             T(titulo, 22, 800, Color.White)
             T(sub, 12, 500, Color.White.copy(alpha = .85f), Modifier.padding(top = 4.dp), 4)
@@ -525,13 +522,13 @@ object Sfx {
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .66f * a.value.coerceIn(0f, 1f))).pointerInput(Unit) { detectTapGestures { fechar() } }, Alignment.Center) {
         Column(Modifier.padding(horizontal = 20.dp).fillMaxWidth()
             .graphicsLayer { val s = .6f + .4f * a.value; scaleX = s; scaleY = s; alpha = a.value.coerceIn(0f, 1f); translationY = (1 - a.value) * 120f }
-            .clip(RoundedCornerShape(30.dp)).background(Color(0xFF16161A)).border(1.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(30.dp))
+            .clip(RoundedCornerShape(28.dp)).background(Color(0xFF111111)).border(1.dp, Line, RoundedCornerShape(28.dp))
             .pointerInput(Unit) { detectTapGestures { } }.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             T("Como você quer criar sua conta?", 24, 800, Color.White, ml = 3, a = TextAlign.Center)
             T("Escolha o seu perfil no beats", 14, 400, Sub, Modifier.padding(top = 6.dp, bottom = 18.dp))
             Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(14.dp)) {
-                CardTipo("Ouvinte", "Ouça tudo e monte seu Replay", Icons.Filled.Headphones, bg(0xFF2A7BFF, 0xFF0B2C8C), 0, Modifier.weight(1f)) { pick(false) }
-                CardTipo("Artista", "Tenha seu perfil, sua foto e suas músicas", Icons.Filled.Mic, bg(0xFFFF3B5C, 0xFF7A0618), 1, Modifier.weight(1f)) { pick(true) }
+                CardTipo("Ouvinte", "Ouça tudo e monte seu Replay", Icons.Filled.Headphones, SolidColor(Surf), 0, Modifier.weight(1f)) { pick(false) }
+                CardTipo("Artista", "Tenha seu perfil, sua foto e suas músicas", Icons.Filled.Mic, SolidColor(Surf), 1, Modifier.weight(1f)) { pick(true) }
             }
         }
     }
@@ -546,10 +543,10 @@ fun forca(p: String): Int = (if (p.length >= 6) 1 else 0) + (if (p.length >= 10)
 
 @Composable fun Forca(p: String) {
     val f = forca(p)
-    val cores = listOf(Color(0xFFFF5A5A), Color(0xFFFFB020), Color(0xFF9BE03A), Color(0xFF2ED573))
+    val cores = listOf(Color(0xFF6B6B70), Color(0xFF9A9AA0), Color(0xFFCFCFD4), Color.White)   // quanto mais clara, mais forte
     Row(Modifier.fillMaxWidth().padding(top = 12.dp), Arrangement.spacedBy(6.dp)) {
         for (k in 0..3) {
-            val c by animateColorAsState(if (p.isNotEmpty() && k < f) cores[(f - 1).coerceIn(0, 3)] else Color.White.copy(alpha = .15f), tween(300), label = "fo$k")
+            val c by animateColorAsState(if (p.isNotEmpty() && k < f) cores[(f - 1).coerceIn(0, 3)] else Line, tween(300), label = "fo$k")
             Box(Modifier.weight(1f).height(4.dp).clip(CircleShape).background(c))
         }
     }
@@ -583,7 +580,7 @@ fun forca(p: String): Int = (if (p.length >= 6) 1 else 0) + (if (p.length >= 10)
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 26.dp)) {
             Row(Modifier.padding(top = 12.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { if (!busy) voltar() } }
             Spacer(Modifier.height(24.dp))
-            Box(Modifier.enter(0).size(70.dp).clip(CircleShape).background(bg(0xFF2A7BFF, 0xFF0B2C8C)), Alignment.Center) { Icon(Icons.Filled.Headphones, null, Modifier.size(36.dp), Color.White) }
+            Box(Modifier.enter(0).size(64.dp).clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.Headphones, null, Modifier.size(32.dp), Color.Black) }
             T("Criar conta de ouvinte", 32, 800, Color.White, Modifier.enter(1).padding(top = 16.dp), 3)
             T("Ouça todas as músicas e acompanhe seu Replay.", 15, 500, Color.White.copy(alpha = .7f), Modifier.enter(2).padding(top = 6.dp, bottom = 28.dp), 3)
             Campo(nome, { nome = it.take(40) }, "Nome de exibição", Icons.Filled.Person, Modifier.enter(3))
@@ -643,10 +640,10 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
 
 @Composable fun LinhaArtista(h: Hit, sel: Boolean, k: Int, on: (String?) -> Unit) {
     val foto by produceState<String?>(null, h.id) { value = fotoArtista(h.name, h.id) }
-    val borda by animateColorAsState(if (sel) Color.White else Color.White.copy(alpha = .12f), tween(250), label = "lb2")
-    Row(Modifier.enter(k).fillMaxWidth().padding(vertical = 5.dp).toca { on(foto) }.clip(RoundedCornerShape(16.dp))
-        .background(Color.White.copy(alpha = if (sel) .2f else .08f)).border(1.5.dp, borda, RoundedCornerShape(16.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(52.dp).clip(CircleShape).background(Color.White.copy(alpha = .15f)), Alignment.Center) {
+    val borda by animateColorAsState(if (sel) Color.White else Line, tween(250), label = "lb2")
+    Row(Modifier.enter(k).fillMaxWidth().padding(vertical = 5.dp).toca { on(foto) }.clip(RoundedCornerShape(14.dp))
+        .background(if (sel) Surf2 else Surf).border(1.dp, borda, RoundedCornerShape(14.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(Surf2), Alignment.Center) {
             T(h.name.take(1).uppercase(), 20, 800, Color.White)
             if (foto != null) AsyncImage(model = foto, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
@@ -689,10 +686,10 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
 @Composable fun OpcaoTipo(x: Tipo, sel: Boolean, k: Int, on: () -> Unit) {
     val e = remember { Animatable(0f) }
     LaunchedEffect(Unit) { delay(k * 60L); e.animateTo(1f, spring(.7f, 300f)) }
-    val borda by animateColorAsState(if (sel) Color.White else Color.White.copy(alpha = .14f), tween(250), label = "ob")
+    val borda by animateColorAsState(if (sel) Color.White else Line, tween(250), label = "ob")
     Row(Modifier.fillMaxWidth().graphicsLayer { alpha = e.value.coerceIn(0f, 1f); translationX = (1 - e.value) * 80f }.toca(on)
-        .clip(RoundedCornerShape(18.dp)).background(bg(x.c1, x.c2)).border(2.dp, borda, RoundedCornerShape(18.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(44.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f)), Alignment.Center) { Icon(x.icon, null, Modifier.size(24.dp), Color.White) }
+        .clip(RoundedCornerShape(16.dp)).background(Surf).border(1.dp, borda, RoundedCornerShape(16.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(Surf2), Alignment.Center) { Icon(x.icon, null, Modifier.size(24.dp), Color.White) }
         Column(Modifier.padding(start = 12.dp).weight(1f)) {
             T(x.nome, 17, 700, Color.White)
             T(x.desc, 12, 500, Color.White.copy(alpha = .85f), Modifier.padding(top = 2.dp), 2)
@@ -706,19 +703,19 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
     val giro by animateFloatAsState(if (aberto) 180f else 0f, spring(.7f, 300f), label = "pg")
     Titulo("Quem é você no beats?", "Escolha seu nome artístico e o tipo de artista")
     if (bloqueado) {
-        Row(Modifier.enter(2).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .06f))
-            .border(1.2.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(16.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.enter(2).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Surf)
+            .border(1.dp, Line, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Person, null, Modifier.size(20.dp), Sub)
             Spacer(Modifier.width(12.dp))
             T(nome, 16, 500, Color.White.copy(alpha = .7f), Modifier.weight(1f))
-            Icon(Icons.Filled.Lock, null, Modifier.size(20.dp), Color(0xFFFFB020))
+            Icon(Icons.Filled.Lock, null, Modifier.size(20.dp), Color.White.copy(alpha = .8f))
         }
         T("Nome vinculado ao seu perfil do iTunes. Ele não poderá ser alterado depois.", 12, 500, Sub, Modifier.padding(top = 8.dp), 3, TextAlign.Center)
     } else Campo(nome, onNome, "Nome de artista", Icons.Filled.Person, Modifier.enter(2))
 
     Column(Modifier.enter(3).fillMaxWidth().padding(top = 14.dp)) {
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .09f))
-            .border(1.2.dp, if (aberto) Color.White else Color.White.copy(alpha = .16f), RoundedCornerShape(16.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Surf)
+            .border(1.dp, if (aberto) Color.White else Line, RoundedCornerShape(14.dp))
             .clickable { aberto = !aberto; Sfx.tick() }.padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
             val t = TIPOS.getOrNull(tipo)
             Icon(t?.icon ?: Icons.Filled.Mic, null, Modifier.size(20.dp), if (t != null) Color.White else Sub)
@@ -865,7 +862,7 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
 //  MINHA CONTA (ouvinte) + EDITAR PERFIL (artista)
 // ======================================================================
 @Composable fun LinhaInfo(rotulo: String, valor: String, k: Int, extra: @Composable () -> Unit = {}) {
-    Row(Modifier.enter(k).fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .09f)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.enter(k).fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(14.dp)).background(Surf).border(1.dp, Line, RoundedCornerShape(14.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             T(rotulo, 12, 600, Sub)
             T(valor, 17, 500, Color.White, Modifier.padding(top = 2.dp))
@@ -885,10 +882,9 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
     val nome = p?.name ?: auth.email.substringBefore("@")
     CompositionLocalProvider(LocalContentColor provides Color.White) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            Box(Modifier.fillMaxWidth().height(380.dp).background(Brush.verticalGradient(listOf(Color(0xCC7A3DFF), Color.Transparent))))
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(Modifier.height(64.dp))
-                Box(Modifier.enter(0).size(120.dp).clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)), Alignment.Center) {
+                Box(Modifier.enter(0).size(120.dp).clip(CircleShape).background(Surf2), Alignment.Center) {
                     T(nome.take(1).uppercase(), 48, 800, Color.White)
                     if (p?.photo != null) AsyncImage(model = p?.photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 }
@@ -914,7 +910,7 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
                         }
                     }
                 }
-                msg?.let { T(it, 13, 600, if (okMsg) Color(0xFF7CFFB2) else Color(0xFFFF6B6B), Modifier.padding(top = 10.dp), 3, TextAlign.Center) }
+                msg?.let { T(it, 13, 600, if (okMsg) Color.White else Color(0xFFFF6B6B), Modifier.padding(top = 10.dp), 3, TextAlign.Center) }
                 T("Por segurança a senha nunca é exibida; ela fica guardada de forma protegida.", 12, 500, Sub, Modifier.padding(top = 12.dp), 3, TextAlign.Center)
                 Pilula("Sair da conta", Modifier.padding(top = 28.dp).fillMaxWidth(), claro = false, icon = Icons.Filled.PowerSettingsNew) { auth.signOut() }
             }
@@ -935,6 +931,17 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
     var busy by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
     var aviso by remember { mutableStateOf(false) }
+    var dest by remember { mutableStateOf(p.featured) }          // música em destaque escolhida
+    var destMudou by remember { mutableStateOf(false) }
+    var buscaAberta by remember { mutableStateOf(false) }
+    var q by remember { mutableStateOf("") }
+    var achados by remember { mutableStateOf(listOf<Track>()) }
+    var buscando by remember { mutableStateOf(false) }
+
+    LaunchedEffect(q) {
+        if (q.isBlank()) { achados = emptyList(); buscando = false }
+        else { buscando = true; delay(450); achados = searchSongs(q.trim(), "BR").take(12); buscando = false }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { u ->
         if (u != null) {
@@ -948,10 +955,10 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
         val novo = nome.trim()
         val mudou = !p.claimed && novo.isNotEmpty() && novo != p.name
         val b = bytes
-        if (!mudou && b == null) { back(); return }
+        if (!mudou && b == null && !destMudou) { back(); return }
         busy = true; err = null
         scope.launch {
-            val e = auth.save(if (mudou) novo else null, b)
+            val e = auth.save(if (mudou) novo else null, b, if (destMudou) dest else null, destMudou && dest == null)
             busy = false
             if (e != null) { err = e; Sfx.erro() } else { Sfx.sucesso(); back() }
         }
@@ -959,7 +966,6 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
 
     CompositionLocalProvider(LocalContentColor provides Color.White) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            Fundo(Color(0xFF5B2BD1), Color(0xFF14082F))
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Glass(Icons.Filled.Close) { back() }
@@ -971,14 +977,48 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
                 T("Toque na foto para trocar", 13, 500, Color.White.copy(alpha = .7f), Modifier.enter(1).padding(top = 4.dp))
                 T("Nome de artista", 13, 600, Sub, Modifier.align(Alignment.Start).padding(top = 28.dp, bottom = 8.dp))
                 if (p.claimed) {
-                    Row(Modifier.fillMaxWidth().toca { aviso = true }.clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .06f))
-                        .border(1.2.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(16.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().toca { aviso = true }.clip(RoundedCornerShape(14.dp)).background(Surf)
+                        .border(1.dp, Line, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.Person, null, Modifier.size(20.dp), Sub)
                         Spacer(Modifier.width(12.dp))
                         T(p.name, 16, 500, Color.White.copy(alpha = .7f), Modifier.weight(1f))
-                        Icon(Icons.Filled.Lock, null, Modifier.size(22.dp).clickable { aviso = true }, Color(0xFFFFB020))
+                        Icon(Icons.Filled.Lock, null, Modifier.size(22.dp).clickable { aviso = true }, Color.White.copy(alpha = .8f))
                     }
                 } else Campo(nome, { nome = it.take(40) }, "Nome de artista", Icons.Filled.Person)
+
+                // ---- música em destaque (o cartão que aparece no seu perfil) ----
+                T("Música em destaque", 13, 600, Sub, Modifier.align(Alignment.Start).padding(top = 26.dp, bottom = 8.dp))
+                val d0 = dest
+                if (d0 != null) {
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Surf).border(1.dp, Line, RoundedCornerShape(14.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(d0.art, Modifier.size(54.dp), RoundedCornerShape(8.dp))
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                            T(d0.name, 16, 700, Color.White)
+                            T(d0.artist, 13, 400, Sub)
+                        }
+                        Box(Modifier.size(34.dp).clip(CircleShape).background(Surf2).clickable { dest = null; destMudou = true; Sfx.tick() }, Alignment.Center) {
+                            Icon(Icons.Filled.Close, null, Modifier.size(18.dp), Color.White)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Pilula(if (buscaAberta) "Fechar busca" else if (d0 != null) "Trocar música" else "Escolher música", Modifier.align(Alignment.Start), claro = false, icon = Icons.Filled.MusicNote, compacta = true) { buscaAberta = !buscaAberta }
+                AnimatedVisibility(buscaAberta, enter = expandVertically(spring(.8f, 300f)) + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        Campo(q, { q = it }, "Buscar música", Icons.Filled.Search)
+                        if (buscando) CircularProgressIndicator(Modifier.padding(top = 14.dp).size(22.dp), Color.White, 2.dp)
+                        achados.forEach { t ->
+                            Row(Modifier.fillMaxWidth().padding(top = 8.dp).toca { dest = t; destMudou = true; buscaAberta = false; q = ""; Sfx.pop() }.clip(RoundedCornerShape(14.dp)).background(Surf).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Img(t.art, Modifier.size(46.dp), RoundedCornerShape(6.dp))
+                                Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                                    T(t.name, 15, 600, Color.White)
+                                    T(t.artist, 12, 400, Sub)
+                                }
+                            }
+                        }
+                        if (!buscando && q.isNotBlank() && achados.isEmpty()) T("Nenhuma música encontrada.", 13, 500, Sub, Modifier.padding(top = 12.dp))
+                    }
+                }
                 err?.let { T(it, 13, 600, Color(0xFFFF6B6B), Modifier.padding(top = 14.dp), 4, TextAlign.Center) }
                 Spacer(Modifier.height(40.dp))
             }
@@ -1029,7 +1069,7 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
     val s = if (!auth.ready) 0 else if (!auth.logged || auth.hold) 1 else 2
     Crossfade(s, Modifier.fillMaxSize().background(Color.Black), label = "root") { x ->
         when (x) {
-            0 -> Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) { Icon(Icons.Filled.MusicNote, null, Modifier.size(56.dp), Red) }
+            0 -> Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) { Icon(Icons.Filled.MusicNote, null, Modifier.size(48.dp), Color.White) }
             1 -> AuthFlow(auth)
             else -> App(stats, auth)
         }

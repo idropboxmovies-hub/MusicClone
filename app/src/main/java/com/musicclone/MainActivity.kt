@@ -5,6 +5,7 @@ package com.musicclone
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
@@ -18,6 +19,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
@@ -53,6 +55,7 @@ import org.json.JSONObject
 import java.net.URL
 import java.util.Calendar
 import java.util.Locale
+import kotlin.math.roundToInt
 
 val Red = Color(0xFFFA243C)
 val Sub = Color(0xFF8A8A8E)
@@ -84,13 +87,14 @@ data class Latest(val album: Album, val count: Int, val date: String)
 
 sealed class Page {
     data class Alb(val a: Album) : Page()
-    data class Art(val name: String, val id: Long, val art: String?, val app: Boolean = false, val feat: Track? = null) : Page()
+    data class Art(val name: String, val id: Long, val art: String?, val app: Boolean = false, val feat: Track? = null, val uid: String? = null) : Page()
     object Me : Page()
     object Edit : Page()
     object Rep : Page()
     data class Plst(val p: PlDef) : Page()
     object Beats : Page()
     object IStudio : Page()
+    data class Lan(val r: Rel) : Page()
 }
 data class Nav(val tab: Int, val page: Page?, val depth: Int)
 
@@ -581,13 +585,17 @@ val LocalArtist = staticCompositionLocalOf<(String, Long, String?) -> Unit> { { 
 typealias Sec = Map<String, List<Album>>
 
 // ---------- Telas ----------
-@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit, mix: (List<Album>) -> Unit, pls: (PlDef) -> Unit, feat: List<Feat>, appArt: List<Prof>, openApp: (Prof) -> Unit) = Scr("Início", { Av() }) {
+@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit, mix: (List<Album>) -> Unit, pls: (PlDef) -> Unit, feat: List<Feat>, appArt: List<Prof>, openApp: (Prof) -> Unit, rels: List<Rel> = emptyList()) = Scr("Início", { Av() }) {
     val go = LocalArtist.current
     T("Feito para Você", 12, 600, Sub); H("Seleção para Você")
     Rw {
         item { Pick("Mix de\nAmigos", "Card B, Offset, Kendrick Lamar, JID e mais", bg(0xFF2A7BFF, 0xFF0B2C8C), 200, 262, 36, Modifier.enter(0)) { mix(sec["hip hop"].orEmpty()) } }
         item { Pick("Todos os\nTempos", "Replay: suas músicas mais tocadas", bg(0xFFFF3B5C, 0xFFB8002A), 200, 262, 36, Modifier.enter(1), rp) }
         item { Pick("Mix\nRelax", "Faixas calmas para focar", bg(0xFF7AD0C6, 0xFF2F6F8F), 200, 262, 36, Modifier.enter(2)) { mix(sec["electronic"].orEmpty()) } }
+    }
+    if (rels.isNotEmpty()) {
+        H("Lançamentos")
+        Rw { itemsIndexed(rels) { k, r -> RelCard(r, Modifier.enter(k)) } }
     }
     H("Playlists do beats")
     Rw { itemsIndexed(PLS) { k, p -> PlCard(p, Modifier.width(165.dp).enter(k)) { pls(p) } } }
@@ -796,12 +804,17 @@ typealias Sec = Map<String, List<Album>>
             if (!mine && p.id != 0L) claimedProf = profileByItunes(p.id)   // foto e música em destaque escolhidas pelo dono do perfil reivindicado
         }
     }
+    // lançamentos feitos no iStudio por esse artista
+    var rels by remember(p) { mutableStateOf(listOf<Rel>()) }
+    val relUid = if (mine) auth?.uid else (p.uid ?: claimedProf?.id)
+    LaunchedEffect(relUid) { if (relUid != null) releasesLoad(relUid)?.let { rels = it } }
+    val relTracks = rels.flatMap { it.tracks }
     val minhaFoto = if (mine) auth?.prof?.photo else null
     val photo = minhaFoto ?: claimedProf?.photo ?: d?.let { it.photo ?: p.art }
     val dest: Track? = if (mine) auth?.prof?.featured else (claimedProf?.featured ?: p.feat)   // música em destaque do artista
     val base = rememberMuted(photo)
     val top = lerp(base, Color.Black, .3f); val bot = lerp(base, Color.Black, .8f)
-    val songs = d?.top.orEmpty()
+    val songs = d?.top.orEmpty().ifEmpty { relTracks }   // artista só do app: mostra as músicas lançadas
     val lt = d?.latest
     Box(Modifier.fillMaxSize().background(top)) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -846,7 +859,13 @@ typealias Sec = Map<String, List<Album>>
                     }
                     Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.Add, null, Modifier.size(18.dp), Color.White) }
                 }
-                Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) { T("Músicas Mais Tocadas", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+                if (rels.isNotEmpty()) {
+                    Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { T("Lançamentos", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+                    LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        itemsIndexed(rels) { k, r -> RelCard(r, Modifier.enter(k), Color.White, Color.White.copy(alpha = .6f), "${r.label} · ${r.date.take(4)}", 130) }
+                    }
+                }
+                Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) { T(if (d?.top.isNullOrEmpty() && relTracks.isNotEmpty()) "Músicas" else "Músicas Mais Tocadas", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
                 songs.forEachIndexed { k, t ->
                     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).enter(k).tap { pl.play(songs, k) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                         Img(t.art, Modifier.size(46.dp), RoundedCornerShape(6.dp))
@@ -861,7 +880,7 @@ typealias Sec = Map<String, List<Album>>
                     }
                 }
                 if (d == null) T("Carregando…", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
-                else if (songs.isEmpty() && p.app) T("Ainda sem músicas por aqui.", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
+                else if (songs.isEmpty() && p.app && rels.isEmpty()) T("Ainda sem músicas por aqui.", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
             }
         }
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -991,52 +1010,87 @@ class SyncStore(ctx: Context) {
     }
 }
 
+@Composable fun NowBtn(i: ImageVector) =
+    Box(Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f)), Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
+
+// controle de volume (volume de mídia do aparelho), com alto-falante nas duas pontas como no Apple Music
+@Composable fun VolumeBar() {
+    val ctx = LocalContext.current
+    val am = remember { ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val max = remember { am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
+    var v by remember { mutableStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat()) }
+    var dragging by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { while (true) { if (!dragging) v = am.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat(); delay(400) } }
+    fun set(f: Float) { v = f.coerceIn(0f, 1f); am.setStreamVolume(AudioManager.STREAM_MUSIC, (v * max).roundToInt(), 0) }
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.VolumeMute, null, Modifier.size(18.dp), Color.White.copy(alpha = .7f))
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.weight(1f).height(28.dp)
+            .pointerInput(Unit) { detectTapGestures { set(it.x / size.width) } }
+            .pointerInput(Unit) { detectHorizontalDragGestures(onDragStart = { dragging = true }, onDragEnd = { dragging = false }, onDragCancel = { dragging = false }) { ch, _ -> set(ch.position.x / size.width) } }, Alignment.CenterStart) {
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
+            Box(Modifier.fillMaxWidth(v.coerceIn(0f, 1f)).height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .85f)))
+        }
+        Spacer(Modifier.width(12.dp))
+        Icon(Icons.Filled.VolumeUp, null, Modifier.size(18.dp), Color.White.copy(alpha = .7f))
+    }
+}
+
 @Composable fun Now(pl: Pl, ui: LyUi, close: () -> Unit) {
     val t = pl.cur ?: return
-    val (c1, c2) = rememberPal(t.art)
-    val ph by rememberInfiniteTransition(label = "i").animateFloat(0f, 1f, infiniteRepeatable(tween(8000, easing = LinearEasing), RepeatMode.Reverse), label = "p")
-    val sc by animateFloatAsState(if (pl.playing) 1f else .86f, spring(.5f, 260f), label = "s")
+    val (c1, _) = rememberPal(t.art)
+    val tint = lerp(c1, Color.White, .6f)
     val fr by animateFloatAsState(if (pl.dur > 0) pl.pos / pl.dur else 0f, tween(220, easing = LinearEasing), label = "f")
     var drag by remember { mutableStateOf(0f) }
-    Column(Modifier.fillMaxSize().background(Color.Black).drawBehind {
-        drawRect(Brush.verticalGradient(listOf(c1, c2, Color.Black)))
-        val r = size.width * .9f; val o1 = Offset(size.width * (.15f + .7f * ph), size.height * (.2f + .15f * ph)); val o2 = Offset(size.width * (.9f - .6f * ph), size.height * .65f)
-        drawCircle(Brush.radialGradient(listOf(lerp(c1, Color.White, .3f).copy(alpha = .45f), Color.Transparent), o1, r), r, o1)
-        drawCircle(Brush.radialGradient(listOf(c2.copy(alpha = .9f), Color.Transparent), o2, r), r, o2)
-    }.pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }
-        .statusBarsPadding().navigationBarsPadding().padding(horizontal = 26.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(Color.White.copy(alpha = .4f)).clickable(onClick = close))
-        Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
-            if (l) Letra(pl, t, ui)
-            else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                T("AutoMix", 12, 700, Color.White, Modifier.padding(top = 12.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .2f)).padding(horizontal = 12.dp, vertical = 4.dp))
-                Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
-                    Crossfade(t.art, label = "cv") { u -> Img(u, Modifier.fillMaxWidth().aspectRatio(1f).graphicsLayer { scaleX = sc; scaleY = sc }.shadow(30.dp, RoundedCornerShape(16.dp)), RoundedCornerShape(16.dp)) }
+    Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }) {
+        // fundo: a própria capa, bem desfocada
+        Crossfade(t.art, Modifier.fillMaxSize(), label = "bg") { u ->
+            AsyncImage(model = u, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
+        }
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .10f), Color.Black.copy(alpha = .35f), Color.Black.copy(alpha = .62f)))))
+        Column(Modifier.fillMaxSize()) {
+            Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
+                if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
+                else Box(Modifier.fillMaxSize()) {
+                    // capa grande de ponta a ponta, que se dissolve no fundo desfocado
+                    Crossfade(t.art, Modifier.fillMaxWidth().aspectRatio(1f).graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent { drawContent(); drawRect(Brush.verticalGradient(0f to Color.Black, .7f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn) }, label = "cv") { u ->
+                        Img(u, Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
+                    }
+                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
+                            Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
+                        }
+                        Spacer(Modifier.width(12.dp)); NowBtn(Icons.Filled.StarBorder); Spacer(Modifier.width(10.dp)); NowBtn(Icons.Filled.MoreHoriz)
+                    }
+                }
+            }
+            Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 26.dp).padding(bottom = 10.dp)) {
+                Box(Modifier.padding(top = 16.dp).fillMaxWidth().height(18.dp).pointerInput(Unit) { detectTapGestures { pl.seek(it.x / size.width) } }, Alignment.CenterStart) {
+                    Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
+                    Box(Modifier.fillMaxWidth(fr.coerceIn(0f, 1f)).height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .85f)))
                 }
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
-                        Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, Color.White.copy(alpha = .7f)) }
+                    T(fmt(pl.pos.toInt()), 12, 500, Color.White.copy(alpha = .7f))
+                    T("Mixing", 12, 600, Color.White.copy(alpha = .7f))
+                    T("-" + fmt((pl.dur - pl.pos).toInt().coerceAtLeast(0)), 12, 500, Color.White.copy(alpha = .7f))
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                    IconButton({ pl.prev() }, Modifier.size(72.dp)) { Icon(Icons.Filled.FastRewind, null, Modifier.size(46.dp), Color.White) }
+                    IconButton({ pl.toggle() }, Modifier.size(84.dp)) { Crossfade(pl.playing, label = "pp") { p -> Icon(if (p) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, Modifier.size(68.dp), Color.White) } }
+                    IconButton({ pl.next() }, Modifier.size(72.dp)) { Icon(Icons.Filled.FastForward, null, Modifier.size(46.dp), Color.White) }
+                }
+                VolumeBar()
+                Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                    Box(Modifier.size(44.dp).clip(CircleShape).background(if (ui.on) Color.White.copy(alpha = .28f) else Color.Transparent).clickable { ui.on = !ui.on }, Alignment.Center) {
+                        Icon(Icons.Filled.ChatBubbleOutline, null, tint = Color.White.copy(alpha = if (ui.on) 1f else .85f))
                     }
-                    Icon(Icons.Filled.StarBorder, null, tint = Color.White); Spacer(Modifier.width(14.dp)); Icon(Icons.Filled.MoreHoriz, null, tint = Color.White)
+                    Icon(Icons.Filled.Airplay, null, tint = Color.White.copy(alpha = .85f))
+                    Icon(Icons.Filled.FormatListBulleted, null, tint = Color.White.copy(alpha = .85f))
                 }
             }
         }
-        Box(Modifier.padding(top = 18.dp).fillMaxWidth().height(18.dp).pointerInput(Unit) { detectTapGestures { pl.seek(it.x / size.width) } }, Alignment.CenterStart) {
-            Box(Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
-            Box(Modifier.fillMaxWidth(fr.coerceIn(0f, 1f)).height(5.dp).clip(CircleShape).background(Color.White))
-        }
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { T(fmt(pl.pos.toInt()), 11, 500, Color.White.copy(alpha = .7f)); T("-" + fmt((pl.dur - pl.pos).toInt().coerceAtLeast(0)), 11, 500, Color.White.copy(alpha = .7f)) }
-        Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-            IconButton({ pl.prev() }) { Icon(Icons.Filled.SkipPrevious, null, Modifier.size(42.dp), Color.White) }
-            IconButton({ pl.toggle() }, Modifier.size(84.dp)) { Crossfade(pl.playing, label = "pp") { p -> Icon(if (p) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, Modifier.size(64.dp), Color.White) } }
-            IconButton({ pl.next() }) { Icon(Icons.Filled.SkipNext, null, Modifier.size(42.dp), Color.White) }
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(CircleShape).background(if (ui.on) Color.White.copy(alpha = .28f) else Color.Transparent).clickable { ui.on = !ui.on }, Alignment.Center) {
-                Icon(Icons.Filled.ChatBubbleOutline, null, tint = Color.White.copy(alpha = if (ui.on) 1f else .85f))
-            }
-            listOf(Icons.Filled.Cast, Icons.Filled.QueueMusic).forEach { Icon(it, null, tint = Color.White.copy(alpha = .85f)) }
-        }
+        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp).size(42.dp, 5.dp).clip(CircleShape).background(Color.White.copy(alpha = .45f)).clickable(onClick = close))
     }
 }
 
@@ -1058,20 +1112,30 @@ class SyncStore(ctx: Context) {
     // artistas criados no app: aparecem para todos e atualizam quando alguém edita o perfil
     var appArt by remember { mutableStateOf(listOf<Prof>()) }
     LaunchedEffect(auth.prof) { appArt = appArtists() }
+    // lista "Lançamentos" da Início: recarrega ao voltar de outra tela (assim aparece o que acabou de ser publicado)
+    var rels by remember { mutableStateOf(listOf<Rel>()) }
+    LaunchedEffect(auth.prof, stack.size) { releasesLoad()?.let { rels = it } }
+    // "Os Melhores": quem reivindicou o perfil escolhe a foto, que vale mais que a do iTunes
+    var claimed by remember { mutableStateOf(mapOf<Long, Prof>()) }
+    LaunchedEffect(auth.prof) { claimed = claimedByItunes(FEAT.map { it.first }) }
+    val featShown = feat.map { f -> claimed[f.id]?.photo?.let { f.copy(photo = it) } ?: f }
     BackHandler(np || stack.isNotEmpty()) { if (np) np = false else stack.removeAt(stack.lastIndex) }
     val open: (Album) -> Unit = { stack.add(Page.Alb(it)) }
     val mix: (List<Album>) -> Unit = { l -> scope.launch { val t = l.shuffled().take(3).flatMap { tracks(it) }.shuffled(); if (t.isNotEmpty()) pl.play(t, 0) } }
     val openArtist: (String, Long, String?) -> Unit = { n, id, art ->
         np = false
         val t = stack.lastOrNull()
-        if (!(t is Page.Art && t.name == n)) stack.add(Page.Art(n, id, art))
+        if (!(t is Page.Art && t.name == n)) {
+            val ap = if (id == 0L) appArt.firstOrNull { it.name == n } else null   // artista criado no app: abre o perfil dele, não o do iTunes
+            stack.add(if (ap != null) Page.Art(ap.name, ap.itunesId, ap.photo, ap.itunesId == 0L, ap.featured, ap.id) else Page.Art(n, id, art))
+        }
     }
     val openPl: (PlDef) -> Unit = { stack.add(Page.Plst(it)) }
     val openBeats: () -> Unit = { if (stack.lastOrNull() !is Page.Beats) stack.add(Page.Beats) }
     val openMe: () -> Unit = { np = false; if (stack.lastOrNull() !is Page.Me) stack.add(Page.Me) }
-    val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured)) }
+    val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured, p.id)) }
     val sub = { stack.isNotEmpty() }
-    CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe) {
+    CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe, LocalRel provides { r: Rel -> np = false; stack.add(Page.Lan(r)) }) {
         Box(Modifier.fillMaxSize().background(bgc)) {
             AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
                 val push = targetState.depth > initialState.depth; val pop = targetState.depth < initialState.depth
@@ -1087,7 +1151,7 @@ class SyncStore(ctx: Context) {
                         Page.Me -> {
                             val pr = auth.prof
                             // artista: a mesma tela de perfil de artista, mas editável; ouvinte: tela da conta
-                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured), pl, open, true, { stack.add(Page.Edit) }) { back() }
+                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured, pr.id), pl, open, true, { stack.add(Page.Edit) }) { back() }
                             else AccountS(auth) { back() }
                         }
                         Page.Edit -> EditarS(auth, { stack.add(Page.IStudio) }) { back() }
@@ -1096,10 +1160,11 @@ class SyncStore(ctx: Context) {
                             { auth.jwt },
                             { auth.uid }
                         ) { back() }
+                        is Page.Lan -> RelS(pg.r, pl) { back() }
                         Page.Rep -> Replay(stats) { back() }
                         is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
                         Page.Beats -> BeatsS(openPl) { back() }
-                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, feat, appArt, openApp); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
+                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, featShown, appArt, openApp, rels); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
                     }
                 }
             }

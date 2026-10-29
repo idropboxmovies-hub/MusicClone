@@ -153,6 +153,7 @@ class Auth(ctx: Context) {
     private var token: String? = sp.getString("token", null)
     private var refresh: String? = sp.getString("refresh", null)
     val logged get() = uid != null
+    val jwt: String? get() = token   // usado pelo iStudio para enviar capas, áudios e lançamentos
 
     class UpRes(val err: String? = null, val confirm: Boolean = false)
 
@@ -919,7 +920,7 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
     }
 }
 
-@Composable fun EditarS(auth: Auth, back: () -> Unit) {
+@Composable fun EditarS(auth: Auth, onStudio: () -> Unit = {}, back: () -> Unit) {
     val p = auth.prof
     if (p == null) { LaunchedEffect(Unit) { back() }; return }
     val ctx = LocalContext.current
@@ -1018,6 +1019,10 @@ suspend fun fotoArtista(name: String, id: Long): String? = photoOf(name) ?: late
                         }
                         if (!buscando && q.isNotBlank() && achados.isEmpty()) T("Nenhuma música encontrada.", 13, 500, Sub, Modifier.padding(top = 12.dp))
                     }
+                }
+                if (p.artist) {
+                    T("iStudio", 13, 600, Sub, Modifier.align(Alignment.Start).padding(top = 26.dp, bottom = 8.dp))
+                    Pilula("Lançar música ou álbum", Modifier.fillMaxWidth(), claro = false, icon = Icons.Filled.MusicNote) { onStudio() }
                 }
                 err?.let { T(it, 13, 600, Color(0xFFFF6B6B), Modifier.padding(top = 14.dp), 4, TextAlign.Center) }
                 Spacer(Modifier.height(40.dp))

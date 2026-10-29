@@ -19,6 +19,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -29,12 +30,22 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.VolumeMute
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -645,7 +656,7 @@ typealias Sec = Map<String, List<Album>>
     }
 }
 
-@Composable fun Lib(sec: Sec, open: (Album) -> Unit) = Scr("Biblioteca", { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MoreHoriz, null, tint = Red); Spacer(Modifier.width(12.dp)); Av() } }) {
+@Composable fun Lib(sec: Sec, open: (Album) -> Unit) = Scr("Biblioteca", { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.MoreHoriz, null, tint = Red); Spacer(Modifier.width(12.dp)); Av() } }) {
     val l = sec["r&b"].orEmpty(); Empty(l); Grid(l.take(6), open); Spacer(Modifier.height(6.dp))
     Li(Icons.Filled.QueueMusic, "Playlists", 0); Li(Icons.Filled.Mic, "Artistas", 1); Li(Icons.Filled.Album, "Álbuns", 2); Li(Icons.Filled.MusicNote, "Músicas", 3)
     H("Adicionados Recentemente"); Rw { itemsIndexed(sec["rock"].orEmpty()) { k, a -> Cv(a, open, Modifier.width(150.dp).enter(k)) } }
@@ -715,25 +726,53 @@ typealias Sec = Map<String, List<Album>>
     IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Red) }
 }
 
+// altura do degradê da capa do álbum: ela some atrás do título e termina exatamente nos botões (a partir dali é só o fundo desfocado)
+val ZONA_ALBUM = 170.dp
+
 @Composable fun AlbumS(al: Album, pl: Pl, back: () -> Unit) {
+    val ctx = LocalContext.current
     val (c1, _) = rememberPal(al.art); var tr by remember { mutableStateOf(listOf<Track>()) }
     LaunchedEffect(al.id) { tr = tracks(al) }
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Img(al.art, Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)))
-            T(al.name, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
-            ATs(al.artist, "", al.artistId, al.art, 19, 600, lerp(c1, Color.White, .55f)); T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
-            Row(Modifier.padding(vertical = 18.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
-            }
-            tr.forEachIndexed { k, t ->
-                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Column(Modifier.weight(1f)) { T(t.name, 16, 500, Color.White); if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 12, 400, Color.White.copy(alpha = .6f)) }; Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+    val escuro = lerp(c1, Color.Black, .6f)
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // fundo fixo: a própria capa bem desfocada, escurecida com a cor dela (é o que aparece dos botões para baixo)
+        AsyncImage(model = hq(al.art), contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .15f), escuro.copy(alpha = .45f), escuro.copy(alpha = .80f)))))
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            // capa de ponta a ponta; some em degradê atrás do título e termina nos botões
+            Box(Modifier.fillMaxWidth().aspectRatio(.85f)) {
+                Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        val z = ZONA_ALBUM.toPx()
+                        drawRect(Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - z, endY = size.height), blendMode = BlendMode.DstIn)
+                    }) {
+                    Img(hq(al.art), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
                 }
-                HorizontalDivider(color = Color.White.copy(alpha = .15f))
+                Box(Modifier.fillMaxWidth().height(120.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(ZONA_ALBUM).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .35f)))))
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 22.dp).padding(bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    T(al.name, 28, 800, Color.White, ml = 2, a = TextAlign.Center)
+                    ATs(al.artist, "", al.artistId, al.art, 20, 600, lerp(c1, Color.White, .55f))
+                    T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
+                }
+            }
+            Acoes(tr, pl)   // aleatório | Reproduzir (pílula) | favorita
+            tr.forEachIndexed { k, t ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp).enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Column(Modifier.weight(1f)) { T(t.name, 16, 500, Color.White); if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 12, 400, Color.White.copy(alpha = .6f)) }; Icon(Icons.Rounded.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                }
+                HorizontalDivider(Modifier.padding(horizontal = 22.dp), color = Color.White.copy(alpha = .15f))
             }
         }
-        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
+        // voltar, compartilhar e mais, em círculos de vidro por cima da capa (como no Apple Music)
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+            Glass(Icons.Filled.ArrowBackIosNew) { back() }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${al.name} de ${al.artist} no beats") }, null)) }
+                Glass(Icons.Rounded.MoreHoriz) { }
+            }
+        }
     }
 }
 
@@ -753,14 +792,12 @@ typealias Sec = Map<String, List<Album>>
             T(pd.title, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
             T("beats", 19, 600, lerp(c1, Color.White, .55f), Modifier.pointerInput(Unit) { detectTapGestures { openBeats() } })
             T(if (tr.isEmpty()) (if (loaded) "Playlist indisponível no momento" else "Carregando…") else "Playlist · ${tr.size} músicas", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
-            Row(Modifier.padding(vertical = 18.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
-            }
+            Acoes(tr, pl)   // aleatório | Reproduzir | favorita
             tr.forEachIndexed { k, t ->
                 Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Img(t.art, Modifier.size(44.dp), RoundedCornerShape(6.dp))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) { T(t.name, 16, 500, Color.White); ATs(t.artist, t.name, t.artistId, t.art, 13, 400, Color.White.copy(alpha = .6f)) }
-                    Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                    Icon(Icons.Rounded.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
                 }
                 HorizontalDivider(color = Color.White.copy(alpha = .15f))
             }
@@ -838,8 +875,8 @@ typealias Sec = Map<String, List<Album>>
                     if (mine) Pilula("Editar perfil", Modifier.padding(top = 14.dp), icon = Icons.Filled.Edit, on = edit)
                     else Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
-                        Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(40.dp), Color.Black) }
-                        Spacer(Modifier.width(30.dp)); Icon(Icons.Filled.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
+                        Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { IcPlay(36.dp, Color.Black) }
+                        Spacer(Modifier.width(30.dp)); Icon(Icons.Rounded.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
                     }
                 }
             }
@@ -850,7 +887,7 @@ typealias Sec = Map<String, List<Album>>
                         T("Em destaque", 11, 500, Color.White.copy(alpha = .6f)); T(dest.name, 16, 700, Color.White)
                         T(if (dest.album.isNotEmpty()) dest.album else dest.artist, 12, 400, Color.White.copy(alpha = .6f))
                     }
-                    Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(18.dp), Color.White) }
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { IcPlay(18.dp, Color.White) }
                 } else if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
@@ -876,7 +913,7 @@ typealias Sec = Map<String, List<Album>>
                             }
                             if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 13, 400, Color.White.copy(alpha = .6f)) else T(if (t.year.isNotEmpty()) "${t.album} · ${t.year}" else t.album, 13, 400, Color.White.copy(alpha = .6f))
                         }
-                        Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                        Icon(Icons.Rounded.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
                     }
                 }
                 if (d == null) T("Carregando…", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
@@ -887,7 +924,7 @@ typealias Sec = Map<String, List<Album>>
             Glass(Icons.Filled.ArrowBackIosNew) { back() }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${p.name} no beats") }, null)) }
-                Glass(Icons.Filled.MoreHoriz) { }
+                Glass(Icons.Rounded.MoreHoriz) { }
             }
         }
     }
@@ -981,9 +1018,9 @@ class SyncStore(ctx: Context) {
                 }
                 Spacer(Modifier.width(8.dp))
             }
-            LBtn(false, {}) { Icon(Icons.Filled.StarBorder, null, Modifier.size(19.dp), Color.White) }
+            LBtn(false, {}) { Icon(Icons.Rounded.StarBorder, null, Modifier.size(19.dp), Color.White) }
             Spacer(Modifier.width(8.dp))
-            LBtn(false, {}) { Icon(Icons.Filled.MoreHoriz, null, Modifier.size(19.dp), Color.White) }
+            LBtn(false, {}) { Icon(Icons.Rounded.MoreHoriz, null, Modifier.size(19.dp), Color.White) }
         }
         if (modoMarcar) T("Toque na linha que está tocando agora para marcar onde a prévia começa na música.", 12, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 10.dp), 2)
         else if (feito && lrc != null && !temSync) T("Esta letra não tem tempos, então não acompanha a música.", 12, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 10.dp), 2)
@@ -1010,6 +1047,117 @@ class SyncStore(ctx: Context) {
     }
 }
 
+// ---------- Ícones desenhados à mão (iguais aos do Apple Music) ----------
+// polígono com cantos arredondados: preenche + contorno redondo (os pontos já vêm recuados em k)
+private fun DrawScope.polyR(c: Color, k: Float, q: List<Offset>) {
+    val p = Path(); p.moveTo(q[0].x, q[0].y)
+    for (i in 1 until q.size) p.lineTo(q[i].x, q[i].y)
+    p.close()
+    drawPath(p, c)
+    drawPath(p, c, style = Stroke(width = k * 2, cap = StrokeCap.Round, join = StrokeJoin.Round))
+}
+
+// triângulo arredondado que cabe exatamente na caixa l,t,r,b (dir = true aponta para a direita)
+private fun DrawScope.triR(l: Float, t: Float, r: Float, b: Float, dir: Boolean, c: Color, k: Float) {
+    val ym = (t + b) / 2
+    if (dir) polyR(c, k, listOf(Offset(l + k, t + k), Offset(r - k, ym), Offset(l + k, b - k)))
+    else polyR(c, k, listOf(Offset(r - k, t + k), Offset(l + k, ym), Offset(r - k, b - k)))
+}
+
+@Composable fun IcPlay(sz: Dp, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val s = size.minDimension
+    triR(s * .16f, s * .08f, s * .90f, s * .92f, true, c, s * .09f)
+}
+
+@Composable fun IcPause(sz: Dp, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val s = size.minDimension
+    val w = s * .25f; val g = s * .17f; val h = s * .84f
+    val x = (s - (2 * w + g)) / 2; val y = (s - h) / 2
+    drawRoundRect(c, Offset(x, y), Size(w, h), CornerRadius(w * .42f))
+    drawRoundRect(c, Offset(x + w + g, y), Size(w, h), CornerRadius(w * .42f))
+}
+
+// voltar / avançar: dois triângulos arredondados colados
+@Composable fun IcSkip(sz: Dp, fwd: Boolean, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val s = size.minDimension
+    val h = s * .62f; val t = (s - h) / 2; val w = s * .52f; val k = s * .07f
+    triR(0f, t, w, t + h, fwd, c, k)
+    triR(s - w, t, s, t + h, fwd, c, k)
+}
+
+// lista (fila de reprodução)
+@Composable fun IcQueue(sz: Dp, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val u = size.minDimension / 24f
+    listOf(6f, 12f, 18f).forEach { y ->
+        drawCircle(c, 1.5f * u, Offset(4.2f * u, y * u))
+        drawLine(c, Offset(9f * u, y * u), Offset(20.5f * u, y * u), 2f * u, StrokeCap.Round)
+    }
+}
+
+// AirPlay de áudio: círculo, dois arcos e triângulo embaixo
+@Composable fun IcAirplay(sz: Dp, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val u = size.minDimension / 24f
+    val st = Stroke(width = 1.9f * u, cap = StrokeCap.Round)
+    fun arco(r: Float) = drawArc(c, 140f, 260f, false, Offset((12f - r) * u, (10f - r) * u), Size(2 * r * u, 2 * r * u), style = st)
+    arco(4.6f); arco(8.6f)
+    drawCircle(c, 1.7f * u, Offset(12f * u, 10f * u))
+    val k = .8f * u
+    polyR(c, k, listOf(Offset(12f * u, 14.6f * u + k), Offset(7.4f * u + k, 21.6f * u - k), Offset(16.6f * u - k, 21.6f * u - k)))
+}
+
+// letra: balão de fala com aspas
+@Composable fun IcLyrics(sz: Dp, c: Color = Color.White) = Canvas(Modifier.size(sz)) {
+    val u = size.minDimension / 24f
+    val p = Path()
+    p.moveTo(11.2f * u, 17.4f * u); p.lineTo(16.6f * u, 17.4f * u)
+    p.quadraticBezierTo(20.6f * u, 17.4f * u, 20.6f * u, 13.4f * u); p.lineTo(20.6f * u, 7.4f * u)
+    p.quadraticBezierTo(20.6f * u, 3.4f * u, 16.6f * u, 3.4f * u); p.lineTo(7.4f * u, 3.4f * u)
+    p.quadraticBezierTo(3.4f * u, 3.4f * u, 3.4f * u, 7.4f * u); p.lineTo(3.4f * u, 13.4f * u)
+    p.quadraticBezierTo(3.4f * u, 17.4f * u, 7.4f * u, 17.4f * u)
+    p.lineTo(6.2f * u, 21.2f * u); p.close()
+    drawPath(p, c, style = Stroke(width = 1.8f * u, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    listOf(9.4f, 14.6f).forEach { x ->
+        drawCircle(c, 1.35f * u, Offset(x * u, 9.2f * u))
+        drawLine(c, Offset(x * u, 9.2f * u), Offset((x - 1.2f) * u, 12.3f * u), 1.7f * u, StrokeCap.Round)
+    }
+}
+
+// barra bem arredondada (progresso e volume): engorda enquanto o dedo está nela
+// onDrag = valor ao vivo enquanto arrasta | onDone = valor final (toque ou soltar o dedo)
+@Composable fun RBar(frac: Float, onDrag: (Float) -> Unit, onDone: (Float) -> Unit, m: Modifier = Modifier) {
+    var down by remember { mutableStateOf(false) }
+    var last by remember { mutableStateOf(0f) }
+    val h by animateDpAsState(if (down) 14.dp else 8.dp, tween(150), label = "rb")
+    Box(m.height(28.dp)
+        .pointerInput(Unit) { detectTapGestures(onPress = { down = true; tryAwaitRelease(); down = false }, onTap = { onDone((it.x / size.width).coerceIn(0f, 1f)) }) }
+        .pointerInput(Unit) {
+            detectHorizontalDragGestures(
+                onDragStart = { down = true; last = (it.x / size.width).coerceIn(0f, 1f); onDrag(last) },
+                onDragEnd = { down = false; onDone(last) },
+                onDragCancel = { down = false }
+            ) { ch, _ -> last = (ch.position.x / size.width).coerceIn(0f, 1f); onDrag(last) }
+        }, Alignment.CenterStart) {
+        Box(Modifier.fillMaxWidth().height(h).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(h).clip(CircleShape).background(Color.White.copy(alpha = .9f)))
+    }
+}
+
+// botão redondo das telas de álbum/playlist (aleatório, favorita)
+@Composable fun CBtn(i: ImageVector, tint: Color = Color.White, f: () -> Unit) =
+    Box(Modifier.size(48.dp).tap(f).clip(CircleShape).background(Color.White.copy(alpha = .2f)), Alignment.Center) { Icon(i, null, Modifier.size(22.dp), tint) }
+
+// aleatório | Reproduzir (em ordem) | favorita
+@Composable fun Acoes(tr: List<Track>, pl: Pl) {
+    var fav by remember { mutableStateOf(false) }
+    Row(Modifier.padding(vertical = 18.dp), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
+        CBtn(Icons.Rounded.Shuffle) { if (tr.isNotEmpty()) pl.play(tr.shuffled(), 0) }
+        Row(Modifier.height(48.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 36.dp), verticalAlignment = Alignment.CenterVertically) {
+            IcPlay(20.dp, Color.Black); T(" Reproduzir", 17, 600, Color.Black)
+        }
+        CBtn(if (fav) Icons.Rounded.Star else Icons.Rounded.StarBorder, if (fav) Red else Color.White) { fav = !fav }
+    }
+}
+
 @Composable fun NowBtn(i: ImageVector) =
     Box(Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f)), Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
 
@@ -1022,71 +1170,80 @@ class SyncStore(ctx: Context) {
     var dragging by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { while (true) { if (!dragging) v = am.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat(); delay(400) } }
     fun set(f: Float) { v = f.coerceIn(0f, 1f); am.setStreamVolume(AudioManager.STREAM_MUSIC, (v * max).roundToInt(), 0) }
-    Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Filled.VolumeMute, null, Modifier.size(18.dp), Color.White.copy(alpha = .7f))
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.VolumeMute, null, Modifier.size(20.dp), Color.White.copy(alpha = .7f))
         Spacer(Modifier.width(12.dp))
-        Box(Modifier.weight(1f).height(28.dp)
-            .pointerInput(Unit) { detectTapGestures { set(it.x / size.width) } }
-            .pointerInput(Unit) { detectHorizontalDragGestures(onDragStart = { dragging = true }, onDragEnd = { dragging = false }, onDragCancel = { dragging = false }) { ch, _ -> set(ch.position.x / size.width) } }, Alignment.CenterStart) {
-            Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
-            Box(Modifier.fillMaxWidth(v.coerceIn(0f, 1f)).height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .85f)))
-        }
+        RBar(v, { dragging = true; set(it) }, { set(it); dragging = false }, Modifier.weight(1f))
         Spacer(Modifier.width(12.dp))
-        Icon(Icons.Filled.VolumeUp, null, Modifier.size(18.dp), Color.White.copy(alpha = .7f))
+        Icon(Icons.Rounded.VolumeUp, null, Modifier.size(20.dp), Color.White.copy(alpha = .7f))
     }
 }
+
+// altura do degradê em que a capa nítida vira o fundo desfocado: termina embaixo do nome da música (aumente para o blur começar mais cedo)
+val ZONA_BLUR = 120.dp
+
+// pede a capa em alta resolução (a capa é esticada na tela inteira)
+fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1000")
 
 @Composable fun Now(pl: Pl, ui: LyUi, close: () -> Unit) {
     val t = pl.cur ?: return
     val (c1, _) = rememberPal(t.art)
     val tint = lerp(c1, Color.White, .6f)
-    val fr by animateFloatAsState(if (pl.dur > 0) pl.pos / pl.dur else 0f, tween(220, easing = LinearEasing), label = "f")
+    val escuro = lerp(c1, Color.Black, .6f)
+    var scrub by remember { mutableStateOf<Float?>(null) }   // posição enquanto o dedo arrasta a barra
+    val alvo = scrub ?: (if (pl.dur > 0) pl.pos / pl.dur else 0f)
+    val fr by animateFloatAsState(alvo, if (scrub != null) snap<Float>() else tween(220, easing = LinearEasing), label = "f")
     var drag by remember { mutableStateOf(0f) }
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }) {
-        // fundo: a própria capa, bem desfocada
+        // fundo: a própria capa, bem desfocada e escurecida com a cor dela (é o que aparece embaixo do nome da música)
         Crossfade(t.art, Modifier.fillMaxSize(), label = "bg") { u ->
-            AsyncImage(model = u, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
+            AsyncImage(model = hq(u), contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
         }
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .10f), Color.Black.copy(alpha = .35f), Color.Black.copy(alpha = .62f)))))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .10f), escuro.copy(alpha = .40f), escuro.copy(alpha = .78f)))))
         Column(Modifier.fillMaxSize()) {
             Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
                 if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
                 else Box(Modifier.fillMaxSize()) {
-                    // capa grande de ponta a ponta, que se dissolve no fundo desfocado
-                    Crossfade(t.art, Modifier.fillMaxWidth().aspectRatio(1f).graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        .drawWithContent { drawContent(); drawRect(Brush.verticalGradient(0f to Color.Black, .7f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn) }, label = "cv") { u ->
-                        Img(u, Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
+                    // capa nítida ocupando toda a área acima dos controles; some em degradê só na altura do nome da música
+                    Crossfade(t.art, Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            val z = ZONA_BLUR.toPx()
+                            drawRect(Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - z, endY = size.height), blendMode = BlendMode.DstIn)
+                        }, label = "cv") { u ->
+                        Img(hq(u), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
                     }
-                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                    Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
+                    Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(ZONA_BLUR).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .35f)))))
+                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 4.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                         AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
                             Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
                         }
-                        Spacer(Modifier.width(12.dp)); NowBtn(Icons.Filled.StarBorder); Spacer(Modifier.width(10.dp)); NowBtn(Icons.Filled.MoreHoriz)
+                        Spacer(Modifier.width(12.dp)); NowBtn(Icons.Rounded.StarBorder); Spacer(Modifier.width(10.dp)); NowBtn(Icons.Rounded.MoreHoriz)
                     }
                 }
             }
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 26.dp).padding(bottom = 10.dp)) {
-                Box(Modifier.padding(top = 16.dp).fillMaxWidth().height(18.dp).pointerInput(Unit) { detectTapGestures { pl.seek(it.x / size.width) } }, Alignment.CenterStart) {
-                    Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
-                    Box(Modifier.fillMaxWidth(fr.coerceIn(0f, 1f)).height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = .85f)))
-                }
+                RBar(fr, { scrub = it }, { pl.seek(it); scrub = null }, Modifier.padding(top = 14.dp).fillMaxWidth())
+                val sc = scrub
+                val ps = if (sc != null) sc * pl.dur else pl.pos
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    T(fmt(pl.pos.toInt()), 12, 500, Color.White.copy(alpha = .7f))
+                    T(fmt(ps.toInt()), 12, 500, Color.White.copy(alpha = .7f))
                     T("Mixing", 12, 600, Color.White.copy(alpha = .7f))
-                    T("-" + fmt((pl.dur - pl.pos).toInt().coerceAtLeast(0)), 12, 500, Color.White.copy(alpha = .7f))
+                    T("-" + fmt((pl.dur - ps).toInt().coerceAtLeast(0)), 12, 500, Color.White.copy(alpha = .7f))
                 }
-                Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-                    IconButton({ pl.prev() }, Modifier.size(72.dp)) { Icon(Icons.Filled.FastRewind, null, Modifier.size(46.dp), Color.White) }
-                    IconButton({ pl.toggle() }, Modifier.size(84.dp)) { Crossfade(pl.playing, label = "pp") { p -> Icon(if (p) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, Modifier.size(68.dp), Color.White) } }
-                    IconButton({ pl.next() }, Modifier.size(72.dp)) { Icon(Icons.Filled.FastForward, null, Modifier.size(46.dp), Color.White) }
+                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                    Box(Modifier.size(76.dp).tap { pl.prev() }, Alignment.Center) { IcSkip(44.dp, false) }
+                    Box(Modifier.size(84.dp).tap { pl.toggle() }, Alignment.Center) { Crossfade(pl.playing, label = "pp") { p -> if (p) IcPause(54.dp) else IcPlay(54.dp) } }
+                    Box(Modifier.size(76.dp).tap { pl.next() }, Alignment.Center) { IcSkip(44.dp, true) }
                 }
                 VolumeBar()
                 Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
                     Box(Modifier.size(44.dp).clip(CircleShape).background(if (ui.on) Color.White.copy(alpha = .28f) else Color.Transparent).clickable { ui.on = !ui.on }, Alignment.Center) {
-                        Icon(Icons.Filled.ChatBubbleOutline, null, tint = Color.White.copy(alpha = if (ui.on) 1f else .85f))
+                        IcLyrics(24.dp, Color.White.copy(alpha = if (ui.on) 1f else .85f))
                     }
-                    Icon(Icons.Filled.Airplay, null, tint = Color.White.copy(alpha = .85f))
-                    Icon(Icons.Filled.FormatListBulleted, null, tint = Color.White.copy(alpha = .85f))
+                    Box(Modifier.size(44.dp), Alignment.Center) { IcAirplay(24.dp, Color.White.copy(alpha = .85f)) }
+                    Box(Modifier.size(44.dp), Alignment.Center) { IcQueue(24.dp, Color.White.copy(alpha = .85f)) }
                 }
             }
         }
@@ -1135,6 +1292,15 @@ class SyncStore(ctx: Context) {
     val openMe: () -> Unit = { np = false; if (stack.lastOrNull() !is Page.Me) stack.add(Page.Me) }
     val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured, p.id)) }
     val sub = { stack.isNotEmpty() }
+
+    // barra de navegação: tocando música, ela encolhe (ícone da aba + mini-player + busca) e fica na cor da capa em versão escura
+    val tabs = listOf(Icons.Filled.Home to "Início", Icons.Filled.GridView to "Novidades", Icons.Filled.Sensors to "Rádio", Icons.Filled.LibraryMusic to "Biblioteca")
+    val (pc1, _) = rememberPal(pl.cur?.art)
+    val navBg by animateColorAsState(if (pl.cur != null) lerp(pc1, Color.Black, .68f) else sf, tween(500), label = "nb")
+    var navOpen by remember { mutableStateOf(false) }   // toque no ícone da aba reabre as 4 abas
+    val compact = pl.cur != null && !navOpen
+    LaunchedEffect(pl.cur == null) { if (pl.cur == null) navOpen = false }
+
     CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe, LocalRel provides { r: Rel -> np = false; stack.add(Page.Lan(r)) }) {
         Box(Modifier.fillMaxSize().background(bgc)) {
             AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
@@ -1168,27 +1334,39 @@ class SyncStore(ctx: Context) {
                     }
                 }
             }
-            Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                AnimatedVisibility(pl.cur != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-                    pl.cur?.let { t ->
-                        Row(Modifier.fillMaxWidth().height(56.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).clickable { np = true }.padding(start = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Img(t.art, Modifier.size(40.dp), RoundedCornerShape(8.dp)); T(t.name, 15, 600, m = Modifier.padding(start = 12.dp).weight(1f))
-                            IconButton({ pl.toggle() }) { Crossfade(pl.playing, label = "m") { p -> Icon(if (p) Icons.Filled.Pause else Icons.Filled.PlayArrow, null) } }
-                            IconButton({ pl.next() }) { Icon(Icons.Filled.SkipNext, null) }
+            Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp)) {
+                AnimatedContent(compact, transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(140)) }, label = "navmode") { cp ->
+                    if (cp) Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                        // esquerda: ícone da aba atual (toque para escolher outra aba)
+                        val ic = tabs[tab.coerceAtMost(3)].first
+                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { navOpen = true }, Alignment.Center) {
+                            Icon(ic, null, Modifier.size(24.dp), if (tab < 4 && !sub()) Red else Color.White)
                         }
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f).height(60.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).padding(3.dp)) {
-                        listOf(Icons.Filled.Home to "Início", Icons.Filled.GridView to "Novidades", Icons.Filled.Sensors to "Rádio", Icons.Filled.LibraryMusic to "Biblioteca").forEachIndexed { k, (i, n) ->
-                            val on = tab == k && !sub()
-                            val col by animateColorAsState(if (on) Red else Sub, label = "ic"); val bk by animateColorAsState(if (on) Color.Gray.copy(alpha = .2f) else Color.Transparent, label = "bk")
-                            Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).background(bk).clickable { stack.clear(); tab = k }, Arrangement.Center, Alignment.CenterHorizontally) {
-                                Icon(i, null, Modifier.size(22.dp), col); T(n, 9, 600, col)
+                        // meio: mini-player (toque abre o player completo)
+                        pl.cur?.let { t ->
+                            Row(Modifier.weight(1f).height(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { np = true }.padding(start = 7.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Img(t.art, Modifier.size(40.dp), RoundedCornerShape(10.dp))
+                                Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                                    T(t.name, 14, 700, Color.White)
+                                    T(t.artist, 12, 400, Color.White.copy(alpha = .6f))
+                                }
+                                Box(Modifier.size(44.dp).clip(CircleShape).clickable { pl.toggle() }, Alignment.Center) { Crossfade(pl.playing, label = "m") { p -> if (p) IcPause(24.dp) else IcPlay(24.dp) } }
                             }
                         }
+                        // direita: busca
+                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { stack.clear(); tab = 4 }, Alignment.Center) { Icon(Icons.Filled.Search, null, Modifier.size(24.dp), Red) }
+                    } else Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).height(60.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).padding(3.dp)) {
+                            tabs.forEachIndexed { k, (i, n) ->
+                                val on = tab == k && !sub()
+                                val col by animateColorAsState(if (on) Red else Sub, label = "ic"); val bk by animateColorAsState(if (on) Color.Gray.copy(alpha = .2f) else Color.Transparent, label = "bk")
+                                Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).background(bk).clickable { stack.clear(); tab = k; navOpen = false }, Arrangement.Center, Alignment.CenterHorizontally) {
+                                    Icon(i, null, Modifier.size(22.dp), col); T(n, 9, 600, col)
+                                }
+                            }
+                        }
+                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { stack.clear(); tab = 4; navOpen = false }, Alignment.Center) { Icon(Icons.Filled.Search, null, tint = if (tab == 4 && !sub()) Red else Sub) }
                     }
-                    Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).clickable { stack.clear(); tab = 4 }, Alignment.Center) { Icon(Icons.Filled.Search, null, tint = if (tab == 4 && !sub()) Red else Sub) }
                 }
             }
             AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) { Now(pl, ly) { np = false } }

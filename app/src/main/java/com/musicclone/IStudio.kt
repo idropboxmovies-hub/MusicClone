@@ -112,12 +112,11 @@ private suspend fun studioUpload(ctx: Context, token: String, bucket: String, pa
             c.setRequestProperty("Authorization", "Bearer $token")
             c.setRequestProperty("apikey", Studio.SUPA_KEY)
             c.setRequestProperty("Content-Type", mime)
-            c.setRequestProperty("x-upsert", "true")
             if (size > 0) c.setFixedLengthStreamingMode(size) else c.setChunkedStreamingMode(0)
             val ins = ctx.contentResolver.openInputStream(uri) ?: error("Não consegui abrir o arquivo")
             ins.use { i -> c.outputStream.use { o -> i.copyTo(o) } }
             val code = c.responseCode
-            if (code !in 200..299) error("Upload falhou ($code): ${c.errorStream?.bufferedReader()?.readText()}")
+            if (code !in 200..299) error("Upload falhou ($code) em $bucket/$caminho: ${c.errorStream?.bufferedReader()?.readText()}")
         } finally { c.disconnect() }
         "${Studio.SUPA_URL}/storage/v1/object/public/$bucket/$caminho"
     }

@@ -84,7 +84,7 @@ data class Latest(val album: Album, val count: Int, val date: String)
 
 sealed class Page {
     data class Alb(val a: Album) : Page()
-    data class Art(val name: String, val id: Long, val art: String?, val app: Boolean = false) : Page()
+    data class Art(val name: String, val id: Long, val art: String?, val app: Boolean = false, val feat: Track? = null) : Page()
     object Me : Page()
     object Edit : Page()
     object Rep : Page()
@@ -535,7 +535,7 @@ val LocalArtist = staticCompositionLocalOf<(String, Long, String?) -> Unit> { { 
     val me = LocalMe.current
     val p = LocalAuth.current?.prof
     val ini = (p?.name ?: "").take(1).uppercase()
-    Box(Modifier.size(34.dp).tap { me() }.clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)), Alignment.Center) {
+    Box(Modifier.size(34.dp).tap { me() }.clip(CircleShape).background(Color(0xFF2C2C2E)), Alignment.Center) {
         if (ini.isNotEmpty()) T(ini, 15, 800, Color.White)
         if (p?.photo != null) AsyncImage(model = p.photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
@@ -600,7 +600,7 @@ typealias Sec = Map<String, List<Album>>
         H("Artistas do beats")
         Rw { itemsIndexed(appArt) { k, a ->
             Column(Modifier.width(96.dp).enter(k).tap { openApp(a) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(Modifier.size(96.dp).clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)), Alignment.Center) {
+                Box(Modifier.size(96.dp).clip(CircleShape).background(Color(0xFF2C2C2E)), Alignment.Center) {
                     T(a.name.take(1).uppercase(), 34, 800, Color.White)
                     if (a.photo != null) AsyncImage(model = a.photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 }
@@ -786,17 +786,18 @@ typealias Sec = Map<String, List<Album>>
     val ctx = LocalContext.current
     val auth = LocalAuth.current
     var d by remember(p) { mutableStateOf<ArtistData?>(null) }
-    var claimedPhoto by remember(p) { mutableStateOf<String?>(null) }
+    var claimedProf by remember(p) { mutableStateOf<Prof?>(null) }
     LaunchedEffect(p) {
         // artista criado no app (sem iTunes): não busca por nome, para não cair no perfil errado
         if (p.app && !(mine && p.id != 0L)) d = ArtistData(p.art, null, 0, "", emptyList())
         else {
             d = artistData(p.name, p.id)
-            if (!mine && p.id != 0L) claimedPhoto = profileByItunes(p.id)?.photo   // foto escolhida pelo dono do perfil reivindicado
+            if (!mine && p.id != 0L) claimedProf = profileByItunes(p.id)   // foto e música em destaque escolhidas pelo dono do perfil reivindicado
         }
     }
     val minhaFoto = if (mine) auth?.prof?.photo else null
-    val photo = minhaFoto ?: claimedPhoto ?: d?.let { it.photo ?: p.art }
+    val photo = minhaFoto ?: claimedProf?.photo ?: d?.let { it.photo ?: p.art }
+    val dest: Track? = if (mine) auth?.prof?.featured else (claimedProf?.featured ?: p.feat)   // música em destaque do artista
     val base = rememberMuted(photo)
     val top = lerp(base, Color.Black, .3f); val bot = lerp(base, Color.Black, .8f)
     val songs = d?.top.orEmpty()
@@ -829,7 +830,14 @@ typealias Sec = Map<String, List<Album>>
                 }
             }
             Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(top, bot))).padding(bottom = 200.dp)) {
-                if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (dest != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { pl.play(listOf(dest), 0) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Img(dest.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                        T("Em destaque", 11, 500, Color.White.copy(alpha = .6f)); T(dest.name, 16, 700, Color.White)
+                        T(if (dest.album.isNotEmpty()) dest.album else dest.artist, 12, 400, Color.White.copy(alpha = .6f))
+                    }
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(18.dp), Color.White) }
+                } else if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
                         T(d?.latestDate.orEmpty(), 11, 500, Color.White.copy(alpha = .6f)); T(lt.name, 16, 700, Color.White)
@@ -1060,7 +1068,7 @@ class SyncStore(ctx: Context) {
     val openPl: (PlDef) -> Unit = { stack.add(Page.Plst(it)) }
     val openBeats: () -> Unit = { if (stack.lastOrNull() !is Page.Beats) stack.add(Page.Beats) }
     val openMe: () -> Unit = { np = false; if (stack.lastOrNull() !is Page.Me) stack.add(Page.Me) }
-    val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L)) }
+    val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured)) }
     val sub = { stack.isNotEmpty() }
     CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe) {
         Box(Modifier.fillMaxSize().background(bgc)) {
@@ -1078,7 +1086,7 @@ class SyncStore(ctx: Context) {
                         Page.Me -> {
                             val pr = auth.prof
                             // artista: a mesma tela de perfil de artista, mas editável; ouvinte: tela da conta
-                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true), pl, open, true, { stack.add(Page.Edit) }) { back() }
+                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured), pl, open, true, { stack.add(Page.Edit) }) { back() }
                             else AccountS(auth) { back() }
                         }
                         Page.Edit -> EditarS(auth) { back() }

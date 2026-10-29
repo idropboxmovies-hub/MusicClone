@@ -1,12 +1,16 @@
-@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class, androidx.compose.animation.ExperimentalAnimationApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class, androidx.compose.animation.ExperimentalAnimationApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package com.musicclone
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -16,13 +20,13 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -46,11 +50,9 @@ import coil.request.SuccessResult
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
 import java.net.URL
-import java.text.Normalizer
+import java.util.Calendar
 import java.util.Locale
-import kotlin.math.abs
 
 val Red = Color(0xFFFA243C)
 val Sub = Color(0xFF8A8A8E)
@@ -60,201 +62,425 @@ fun bg(a: Long, b: Long) = Brush.linearGradient(listOf(Color(a), Color(b)))
 fun grad(h: Float, k: Float = 45f) = Brush.linearGradient(listOf(Color.hsv(h % 360, .55f, .95f), Color.hsv((h + k) % 360, .75f, .5f)))
 fun fmt(s: Int) = "${s / 60}:${"%02d".format(s % 60)}"
 
-data class Album(val id: Long, val name: String, val artist: String, val art: String, val genre: String, val year: String)
-data class Ln(val ms: Long, val text: String)
-data class Lyr(val lines: List<Ln>, val synced: Boolean)
-class Info(val title: String, val mains: List<String>, val feats: List<String>)
+val mesesCurtos = listOf("Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez")
+val mesesLongos = listOf("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+val mesesAbrev = listOf("jan.", "fev.", "mar.", "abr.", "mai.", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez.")
+val ptBR: Locale = Locale.forLanguageTag("pt-BR")
 
-// Nomes que contêm "&" ou "," mas são UM artista só (não podem ser separados)
-val PROT = listOf(
-    "Tyler, The Creator", "Earth, Wind & Fire", "Simon & Garfunkel", "Hall & Oates", "Crosby, Stills, Nash & Young", "Crosby, Stills & Nash",
-    "Emerson, Lake & Palmer", "Peter, Paul & Mary", "Brooks & Dunn", "Mumford & Sons", "Florence + The Machine", "Kool & The Gang",
-    "Sly & The Family Stone", "Bob Marley & The Wailers", "Tom Petty & The Heartbreakers", "Echo & The Bunnymen", "Years & Years",
-    "Gladys Knight & The Pips", "Diana Ross & The Supremes", "Martha Reeves & The Vandellas",
-    "Jorge & Mateus", "Henrique & Juliano", "Zé Neto & Cristiano", "Bruno & Marrone", "Simone & Simaria", "Matheus & Kauan", "Sandy & Junior",
-    "Chitãozinho & Xororó", "Munhoz & Mariano", "Fernando & Sorocaba", "Maiara & Maraisa", "Israel & Rodolffo", "Diego & Victor Hugo",
-    "João Neto & Frederico", "Hugo & Guilherme", "Edson & Hudson", "Leandro & Leonardo", "Milionário & José Rico"
-)
-val FEAT_P = Regex("""\s*[(\[]\s*(?:feat|ft|featuring|part|participação|participacao)\.?\s+([^)\]]+)[)\]]""", RegexOption.IGNORE_CASE)
-val FEAT_D = Regex("""\s+[-–]\s+(?:feat|ft|featuring)\.?\s+(.+)$""", RegexOption.IGNORE_CASE)
-val FEAT_A = Regex("""\s+(?:feat|ft|featuring)\.?\s+""", RegexOption.IGNORE_CASE)
-val SEP_MAIN = Regex("""\s*(?:,|&|\s+x\s+|\s+×\s+)\s*""", RegexOption.IGNORE_CASE)
-val SEP_FEAT = Regex("""\s*(?:,|&|\s+and\s+|\s+e\s+|\s+x\s+|\s+×\s+)\s*""", RegexOption.IGNORE_CASE)
-val PH = Regex("\u0001(\\d+)\u0001")
+fun dataBr(iso: String): String = runCatching {
+    val p = iso.take(10).split("-"); "${p[2].toInt()} de ${mesesAbrev[p[1].toInt() - 1]} de ${p[0]}"
+}.getOrDefault("")
 
-fun nrm(s: String) = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase().trim()
-
-fun splitNames(s: String, loose: Boolean): List<String> {
-    var x = s; val ph = mutableListOf<String>()
-    PROT.forEach { p ->
-        x = Regex(Regex.escape(p), RegexOption.IGNORE_CASE).replace(x) { m -> ph.add(m.value); "\u0001${ph.size - 1}\u0001" }
-    }
-    return x.split(if (loose) SEP_FEAT else SEP_MAIN).map { it.trim() }.filter { it.isNotEmpty() }
-        .map { n -> PH.replace(n) { ph[it.groupValues[1].toInt()] } }
+fun tempo(s: Float): String {
+    val t = s.toInt()
+    return if (t < 60) "$t ${if (t == 1) "segundo" else "segundos"}"
+    else { val m = t / 60; "${String.format(ptBR, "%,d", m)} ${if (m == 1) "minuto" else "minutos"}" }
 }
 
-fun parseInfo(name: String, artist: String): Info {
-    var title = name; val f = mutableListOf<String>()
-    FEAT_P.findAll(title).toList().forEach { f.addAll(splitNames(it.groupValues[1], true)) }
-    title = FEAT_P.replace(title, "")
-    FEAT_D.find(title)?.let { f.addAll(splitNames(it.groupValues[1], true)); title = title.replace(FEAT_D, "") }
-    val parts = artist.split(FEAT_A, 2)
-    val mains = splitNames(parts[0], false).ifEmpty { listOf(artist) }.distinctBy { nrm(it) }
-    if (parts.size > 1) f.addAll(splitNames(parts[1], true))
-    val fe = f.distinctBy { nrm(it) }.filter { x -> mains.none { nrm(it) == nrm(x) } }
-    return Info(title.trim().ifEmpty { name }, mains, fe)
-}
+data class Album(val id: Long, val name: String, val artist: String, val art: String, val genre: String, val year: String, val artistId: Long = 0)
+data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val artistId: Long = 0, val year: String = "", val explicit: Boolean = false, val dur: Int = 0)
+data class ArtistData(val photo: String?, val latest: Album?, val latestCount: Int, val latestDate: String, val top: List<Track>)
+data class Latest(val album: Album, val count: Int, val date: String)
 
-data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val dur: Long = 0) {
-    private val info = parseInfo(name, artist)
-    val title get() = info.title          // título limpo, sem "(feat. ...)"
-    val mains get() = info.mains          // artistas principais
-    val feats get() = info.feats          // participações
-    val all get() = info.mains + info.feats
-    val key get() = "$name|$artist"
+sealed class Page {
+    data class Alb(val a: Album) : Page()
+    data class Art(val name: String, val id: Long, val art: String?) : Page()
+    object Rep : Page()
+    data class Plst(val p: PlDef) : Page()
+    object Beats : Page()
 }
-data class Dest(val tab: Int = 0, val album: Album? = null, val artist: String? = null, val depth: Int = 0)
+data class Nav(val tab: Int, val page: Page?, val depth: Int)
 
-suspend fun http(u: String): String? = withContext(Dispatchers.IO) {
-    runCatching {
-        val c = URL(u).openConnection() as HttpURLConnection
-        c.connectTimeout = 10000; c.readTimeout = 15000; c.setRequestProperty("User-Agent", "MusicClone/2.0 (Android)")
-        c.inputStream.bufferedReader().use { it.readText() }
-    }.getOrNull()
-}
-suspend fun get(u: String): JSONObject? = http(u)?.let { s -> runCatching { JSONObject(s) }.getOrNull() }
-fun JSONObject.str(k: String) = if (isNull(k)) "" else optString(k)
+suspend fun get(u: String) = withContext(Dispatchers.IO) { runCatching { JSONObject(URL(u).readText()) }.getOrNull() }
 
 suspend fun albums(term: String): List<Album> {
-    val j = get("https://itunes.apple.com/search?entity=album&limit=12&term=${Uri.encode(term)}") ?: return emptyList()
+    val j = get("https://itunes.apple.com/search?entity=album&limit=12&country=BR&term=${Uri.encode(term)}") ?: return emptyList()
     val a = j.optJSONArray("results") ?: return emptyList()
     return (0 until a.length()).map { a.getJSONObject(it) }.map {
-        Album(it.optLong("collectionId"), it.optString("collectionName"), it.optString("artistName"), it.optString("artworkUrl100").replace("100x100", "600x600"), it.optString("primaryGenreName"), it.optString("releaseDate").take(4))
+        Album(it.optLong("collectionId"), it.optString("collectionName"), it.optString("artistName"), it.optString("artworkUrl100").replace("100x100", "600x600"), it.optString("primaryGenreName"), it.optString("releaseDate").take(4), it.optLong("artistId"))
     }
 }
-fun songOf(o: JSONObject, al: Album? = null): Track? {
-    if (!o.has("previewUrl") || !o.has("trackName")) return null
-    return Track(o.optString("trackName"), o.optString("artistName"), al?.art ?: o.optString("artworkUrl100").replace("100x100", "600x600"), o.optString("previewUrl"), al?.name ?: o.optString("collectionName"), o.optLong("trackTimeMillis"))
-}
+
 suspend fun tracks(al: Album): List<Track> {
-    val j = get("https://itunes.apple.com/lookup?entity=song&id=${al.id}") ?: return emptyList()
+    val j = get("https://itunes.apple.com/lookup?entity=song&country=BR&id=${al.id}") ?: return emptyList()
     val a = j.optJSONArray("results") ?: return emptyList()
-    return (0 until a.length()).mapNotNull { songOf(a.getJSONObject(it), al) }
-}
-// Perfil do artista: SÓ músicas em que ele é principal ou participação (feat.)
-suspend fun artistTracks(name: String): List<Track> = coroutineScope {
-    val e = Uri.encode(name); val n = nrm(name)
-    val js = listOf(
-        "https://itunes.apple.com/search?entity=song&attribute=artistTerm&limit=200&term=$e",
-        "https://itunes.apple.com/search?entity=song&limit=200&term=$e"
-    ).map { u -> async { get(u) } }.awaitAll().filterNotNull()
-    js.flatMap { j ->
-        val a = j.optJSONArray("results")
-        if (a == null) emptyList<Track>() else (0 until a.length()).mapNotNull { songOf(a.getJSONObject(it)) }
-    }
-        .filter { t -> t.all.any { nrm(it) == n } }
-        .distinctBy { nrm(it.title) + "|" + nrm(it.mains.firstOrNull() ?: "") }
-        .sortedBy { t -> if (t.mains.any { nrm(it) == n }) 0 else 1 }
-}
-suspend fun artistNames(term: String): List<String> {
-    val a = get("https://itunes.apple.com/search?entity=musicArtist&limit=4&term=${Uri.encode(term)}")?.optJSONArray("results") ?: return emptyList()
-    return (0 until a.length()).map { a.getJSONObject(it).optString("artistName") }.filter { it.isNotBlank() }.distinct()
+    return (1 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }
+        .map { Track(it.optString("trackName"), it.optString("artistName"), al.art, it.optString("previewUrl"), al.name, it.optLong("artistId"), al.year, it.optString("trackExplicitness") == "explicit", (it.optLong("trackTimeMillis") / 1000).toInt()) }
 }
 
-// ---------- Letras (LRCLIB) ----------
-val TS = Regex("""\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]""")
-fun parseLrc(s: String): List<Ln> = s.lines().flatMap { raw ->
-    val ms = TS.findAll(raw).toList()
-    if (ms.isEmpty()) emptyList<Ln>() else {
-        val text = raw.substring(ms.last().range.last + 1).trim()
-        if (text.isEmpty()) emptyList<Ln>()
-        else ms.map { m -> Ln(((m.groupValues[1].toInt() * 60 + m.groupValues[2].replace(':', '.').toFloat()) * 1000).toLong(), text) }
-    }
-}.sortedBy { it.ms }
+fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
-suspend fun lyrics(t: Track): Lyr? {
-    val ar = t.mains.firstOrNull() ?: t.artist; val tn = nrm(t.title)
-    val urls = listOf(
-        "https://lrclib.net/api/search?track_name=${Uri.encode(t.title)}&artist_name=${Uri.encode(ar)}",
-        "https://lrclib.net/api/search?q=${Uri.encode(t.title + " " + ar)}"
-    )
-    for (u in urls) {
-        val s = http(u) ?: continue
-        val a = runCatching { JSONArray(s) }.getOrNull() ?: continue
-        val c = (0 until a.length()).map { a.getJSONObject(it) }.filter {
-            val n = nrm(it.str("trackName"))
-            (it.str("syncedLyrics").isNotBlank() || it.str("plainLyrics").isNotBlank()) && (n.contains(tn) || tn.contains(n))
-        }
-        val best = c.minByOrNull { o ->
-            val diff = if (t.dur > 0) abs(o.optDouble("duration", 0.0) - t.dur / 1000.0).toInt().coerceAtMost(9999) else 0
-            diff + (if (o.str("syncedLyrics").isNotBlank()) 0 else 15)
-        } ?: continue
-        val sy = best.str("syncedLyrics")
-        if (sy.isNotBlank()) { val l = parseLrc(sy); if (l.isNotEmpty()) return Lyr(l, true) }
-        val pl = best.str("plainLyrics").lines().map { it.trim() }.filter { it.isNotEmpty() }
-        if (pl.isNotEmpty()) return Lyr(pl.map { Ln(-1, it) }, false)
+suspend fun photoOf(name: String): String? {
+    val d = get("https://api.deezer.com/search/artist?limit=1&q=${Uri.encode(name)}")?.optJSONArray("data")?.optJSONObject(0) ?: return null
+    val n = norm(d.optString("name")); val m = norm(name)
+    if (n.isEmpty() || m.isEmpty() || !(n == m || n.contains(m) || m.contains(n))) return null
+    return d.optString("picture_xl").takeIf { it.startsWith("http") && !it.contains("/artist//") }
+}
+
+fun toTrack(o: JSONObject) = Track(o.optString("trackName"), o.optString("artistName"), o.optString("artworkUrl100").replace("100x100", "300x300"), o.optString("previewUrl"), o.optString("collectionName"), o.optLong("artistId"), o.optString("releaseDate").take(4), o.optString("trackExplicitness") == "explicit", (o.optLong("trackTimeMillis") / 1000).toInt())
+
+suspend fun topSongs(id: Long): List<Track> {
+    if (id == 0L) return emptyList()
+    for (cc in listOf("BR", "US")) {
+        val a = get("https://itunes.apple.com/lookup?id=$id&entity=song&limit=15&country=$cc")?.optJSONArray("results") ?: continue
+        val l = (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optString("wrapperType") == "track" && it.has("previewUrl") }.map { toTrack(it) }
+        if (l.isNotEmpty()) return l
+    }
+    return emptyList()
+}
+
+suspend fun latest(id: Long): Latest? {
+    if (id == 0L) return null
+    for (cc in listOf("BR", "US")) {
+        val a = get("https://itunes.apple.com/lookup?id=$id&entity=album&limit=6&sort=recent&country=$cc")?.optJSONArray("results") ?: continue
+        val o = (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("wrapperType") == "collection" } ?: continue
+        val al = Album(o.optLong("collectionId"), o.optString("collectionName"), o.optString("artistName"), o.optString("artworkUrl100").replace("100x100", "600x600"), o.optString("primaryGenreName"), o.optString("releaseDate").take(4), id)
+        return Latest(al, o.optInt("trackCount"), dataBr(o.optString("releaseDate")))
     }
     return null
 }
 
-// ---------- Tradução da letra ----------
-suspend fun gt(s: String, to: String): String? {
-    val raw = http("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$to&dt=t&q=${Uri.encode(s)}") ?: return null
-    return runCatching {
-        val a = JSONArray(raw).getJSONArray(0)
-        buildString { for (i in 0 until a.length()) { val p = a.getJSONArray(i); if (!p.isNull(0)) append(p.optString(0)) } }
-    }.getOrNull()
-}
-suspend fun trChunk(ch: List<String>, to: String): List<String>? {
-    val sp = gt(ch.joinToString("\n"), to)?.split("\n")
-    if (sp != null && sp.size == ch.size) return sp.map { it.trim() }
-    val r = ch.map { gt(it, to) }
-    return if (r.all { it == null }) null else r.map { it ?: "" }
-}
-suspend fun translateAll(l: List<String>, to: String): List<String>? = coroutineScope {
-    val parts = l.chunked(12).map { ch -> async { trChunk(ch, to) } }.awaitAll()
-    if (parts.any { it == null }) null else parts.flatMap { it.orEmpty() }
+// acha o id do artista pelo nome (só aceita nome igual ou parecido, para não cair no perfil errado)
+suspend fun resolveId(name: String): Long {
+    val a = get("https://itunes.apple.com/search?entity=musicArtist&limit=5&country=BR&term=${Uri.encode(name)}")?.optJSONArray("results") ?: return 0L
+    val l = (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+    val m = norm(name)
+    val o = l.firstOrNull { norm(it.optString("artistName")) == m }
+        ?: l.firstOrNull { val n = norm(it.optString("artistName")); n.isNotEmpty() && m.isNotEmpty() && (n.contains(m) || m.contains(n)) }
+    return o?.optLong("artistId") ?: 0L
 }
 
-class Pl(ctx: Context) {
-    private val sp = ctx.getSharedPreferences("lyr", Context.MODE_PRIVATE)
-    var q by mutableStateOf(listOf<Track>()); var i by mutableStateOf(0); var playing by mutableStateOf(false)
-    var pos by mutableStateOf(0f); var dur by mutableStateOf(30f)
-    var lyOpen by mutableStateOf(false); var trOn by mutableStateOf(false)
-    // onde a prévia de 30s começa dentro da música (em segundos), salvo no celular por música
-    val offs = mutableStateMapOf<String, Float>().also { m -> sp.all.forEach { (k, v) -> if (v is Float) m[k] = v } }
-    fun setOff(k: String, v: Float) { offs[k] = v; sp.edit().putFloat(k, v).apply() }
-    fun clearOff(k: String) { offs.remove(k); sp.edit().remove(k).apply() }
-    val lyCache = mutableMapOf<String, Lyr>(); val trCache = mutableMapOf<String, List<String>>()
-    val cur get() = q.getOrNull(i)
-    private var mp: MediaPlayer? = null
-    fun play(l: List<Track>, k: Int) { q = l; i = k; load() }
-    private fun load() {
-        mp?.release(); val t = cur ?: return; pos = 0f
-        mp = MediaPlayer().apply {
-            setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-            setDataSource(t.url)
-            setOnPreparedListener { m -> dur = m.duration / 1000f; m.start(); playing = true }
-            setOnCompletionListener { next() }
-            setOnErrorListener { _, _, _ -> playing = false; true }
-            prepareAsync()
+suspend fun searchRaw(q: String, cc: String): List<Track> {
+    val a = get("https://itunes.apple.com/search?entity=song&media=music&limit=50&country=$cc&$q")?.optJSONArray("results") ?: return emptyList()
+    return (0 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }.map { toTrack(it) }
+}
+
+// músicas em que o nome aparece como artista (inclui "A & B") e músicas com "feat." no título
+suspend fun collabSongs(name: String): List<Track> = coroutineScope {
+    val a = async { searchRaw("attribute=artistTerm&term=${Uri.encode(name)}", "BR") }
+    val b = async { searchRaw("term=${Uri.encode(name)}", "BR") }
+    a.await() + b.await()
+}
+
+// a música é do artista (principal) ou ele é colaborador (feat / vários artistas)?
+fun envolve(t: Track, nome: String, id: Long): Boolean {
+    if (id != 0L && t.artistId == id) return true
+    val n = norm(nome)
+    return n.isNotEmpty() && creditos(t.artist, t.name).any { norm(it) == n }
+}
+
+suspend fun artistData(name: String, id0: Long): ArtistData = coroutineScope {
+    val id = if (id0 != 0L) id0 else resolveId(name)
+    val ph = async { photoOf(name) }
+    val tp = async { topSongs(id) }
+    val co = async { collabSongs(name) }
+    val lt = async { latest(id) }
+    val l = lt.await()
+    val top = (tp.await() + co.await()).filter { envolve(it, name, id) }.distinctBy { norm(it.name + it.artist) }.take(25)
+    ArtistData(ph.await(), l?.album, l?.count ?: 0, l?.date ?: "", top)
+}
+
+// ---------- Créditos (feat / vários artistas) ----------
+// Duplas e bandas cujo nome tem "&" ou "," e NÃO devem virar dois perfis. Se aparecer outra, é só incluir aqui.
+val GRUPOS = listOf(
+    "Tyler, The Creator", "Earth, Wind & Fire", "Simon & Garfunkel", "Hall & Oates", "Mumford & Sons", "Brooks & Dunn",
+    "Kool & the Gang", "Sly & the Family Stone", "Hootie & the Blowfish", "Katrina & the Waves", "Echo & the Bunnymen",
+    "Bob Marley & The Wailers", "Tom Petty & The Heartbreakers", "Prince & The Revolution", "Marina & the Diamonds",
+    "Jorge & Mateus", "Simone & Simaria", "Zezé Di Camargo & Luciano", "Matheus & Kauan", "Hugo & Guilherme", "Henrique & Juliano",
+    "Maiara & Maraisa", "Bruno & Marrone", "Fernando & Sorocaba", "Cleber & Cauan", "Israel & Rodolffo", "Chitãozinho & Xororó",
+    "Leandro & Leonardo", "Edson & Hudson", "Munhoz & Mariano", "João Neto & Frederico", "Day & Lara", "Zé Neto & Cristiano",
+    "Thaeme & Thiago", "Gino & Geno", "Rionegro & Solimões", "Milionário & José Rico"
+)
+private val SEP = Regex("\\s*(?:,|&)\\s*|\\s+(?:x|feat\\.?|ft\\.?|featuring|with|con)\\s+", RegexOption.IGNORE_CASE)
+private val FEAT_RX = Regex("[(\\[]\\s*(?:feat\\.?|ft\\.?|featuring|with|participa[çc][ãa]o(?:\\s+especial)?(?:\\s+de)?)\\s+([^)\\]]+)[)\\]]", RegexOption.IGNORE_CASE)
+private val FEAT2_RX = Regex("\\s(?:feat\\.?|ft\\.?|featuring)\\s+(.+)$", RegexOption.IGNORE_CASE)
+
+// "Kapo & Myke Towers" -> [Kapo, Myke Towers]
+fun splitArtistas(s: String): List<String> {
+    var t = s
+    GRUPOS.forEach { g -> if (t.contains(g, true)) t = t.replace(g, g.replace(",", "\u0001").replace("&", "\u0002").replace(" ", "\u0003"), true) }
+    return t.split(SEP).map { it.replace("\u0001", ",").replace("\u0002", "&").replace("\u0003", " ").trim() }.filter { it.isNotEmpty() }
+}
+
+// "ILY (feat. Myke Towers)" -> [Myke Towers]
+fun featDoTitulo(n: String): List<String> {
+    val m = FEAT_RX.find(n) ?: FEAT2_RX.find(n) ?: return emptyList()
+    return splitArtistas(m.groupValues[1]).filter { x -> x.any { it.isLetter() } }
+}
+
+fun creditos(artist: String, title: String = ""): List<String> = (splitArtistas(artist) + featDoTitulo(title)).distinctBy { norm(it) }
+
+// o id que veio do iTunes só vale para o primeiro nome, e só quando o campo de artista tem um nome só
+fun idDe(artist: String, k: Int, id: Long): Long = if (k == 0 && splitArtistas(artist).size == 1) id else 0L
+
+fun tituloLimpo(n: String): String = n.replace(Regex("\\s*[(\\[][^)\\]]*[)\\]]"), "")
+    .replace(Regex("\\s+[-–—]\\s+.*(?:remaster|version|versão|edit|live|ao vivo|mix|from|bonus|deluxe|acoustic|acústic|radio|mono|stereo|single|original|feat|ft\\.).*$", RegexOption.IGNORE_CASE), "")
+    .replace(FEAT2_RX, "").trim().ifEmpty { n }
+
+// ---------- Letra sincronizada (LRCLIB) e tradução ----------
+class Ly(val ms: Long, val txt: String)
+class Lrc(val synced: List<Ly>, val plain: List<String>)
+
+suspend fun httpText(u: String): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        val c = URL(u).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000; c.readTimeout = 10000
+        c.setRequestProperty("User-Agent", "beats/1.0 (Android)")
+        c.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
+}
+
+fun js(o: JSONObject, k: String): String = if (o.isNull(k)) "" else o.optString(k)
+
+private val LRC_TAG = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]")
+
+// "[01:23.45] texto" -> (tempo em ms, texto)
+fun parseLrc(s: String): List<Ly> {
+    val out = ArrayList<Ly>()
+    for (raw in s.lines()) {
+        val tags = LRC_TAG.findAll(raw).toList()
+        if (tags.isEmpty()) continue
+        val txt = raw.substring(tags.last().range.last + 1).trim()
+        if (txt.isEmpty()) continue
+        for (m in tags) {
+            val ms = m.groupValues[1].toLong() * 60000L + m.groupValues[2].toLong() * 1000L + (m.groupValues[3].padEnd(3, '0').take(3).toLongOrNull() ?: 0L)
+            out.add(Ly(ms, txt))
         }
     }
-    fun toggle() { mp?.let { if (it.isPlaying) { it.pause(); playing = false } else { it.start(); playing = true } } }
+    return out.sortedBy { it.ms }
+}
+
+// busca pelo título limpo + primeiro artista; escolhe o que bate o nome, prefere a versão com tempos e a duração mais próxima
+suspend fun lrclib(t: Track): Lrc? {
+    val titulo = tituloLimpo(t.name)
+    val art = splitArtistas(t.artist).firstOrNull() ?: t.artist
+    suspend fun busca(q: String): List<JSONObject> {
+        val a = httpText("https://lrclib.net/api/search?$q")?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return emptyList()
+        return (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+    }
+    var r = busca("track_name=${Uri.encode(titulo)}&artist_name=${Uri.encode(art)}")
+    if (r.isEmpty()) r = busca("q=${Uri.encode("$titulo $art")}")
+    val nt = norm(titulo)
+    val ok = r.filter { val n = norm(js(it, "trackName")); n.isNotEmpty() && (n == nt || n.contains(nt) || nt.contains(n)) }
+    if (ok.isEmpty()) return null
+    val perto = if (t.dur > 0) ok.filter { Math.abs(it.optDouble("duration", 0.0) - t.dur) <= 30 }.ifEmpty { ok } else ok
+    val melhor = perto.sortedWith(compareByDescending<JSONObject> { js(it, "syncedLyrics").isNotBlank() }.thenBy { if (t.dur > 0) Math.abs(it.optDouble("duration", 0.0) - t.dur) else 0.0 }).first()
+    val sy = js(melhor, "syncedLyrics")
+    val synced = if (sy.isNotBlank()) parseLrc(sy) else emptyList()
+    val plain = js(melhor, "plainLyrics").lines().map { it.trim() }.filter { it.isNotEmpty() }
+    return if (synced.isEmpty() && plain.isEmpty()) null else Lrc(synced, plain)
+}
+
+val LRC_CACHE = HashMap<String, Lrc>()
+suspend fun lrcDe(t: Track): Lrc? {
+    val k = norm(t.name) + "|" + norm(t.artist)
+    LRC_CACHE[k]?.let { return it }
+    return lrclib(t)?.also { LRC_CACHE[k] = it }
+}
+
+// Google Tradutor: um bloco de até 12 linhas por pedido; se o número de linhas voltar diferente, traduz linha a linha
+suspend fun traduzBloco(b: List<String>, tl: String): List<String>? {
+    suspend fun um(s: String): String? {
+        val j = httpText("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$tl&dt=t&q=${Uri.encode(s)}") ?: return null
+        return runCatching {
+            val seg = JSONArray(j).getJSONArray(0)
+            buildString { for (i in 0 until seg.length()) { val x = seg.optJSONArray(i) ?: continue; if (!x.isNull(0)) append(x.optString(0)) } }
+        }.getOrNull()
+    }
+    val t = um(b.joinToString("\n")) ?: return null
+    val p = t.trimEnd('\n').split("\n")
+    if (p.size == b.size) return p.map { it.trim() }
+    return coroutineScope { b.map { l -> async { um(l)?.trim() ?: "" } }.awaitAll() }
+}
+
+suspend fun traduzir(linhas: List<String>, tl: String): List<String>? = coroutineScope {
+    val blocos = linhas.chunked(12)
+    val res = blocos.map { b -> async { traduzBloco(b, tl) } }.awaitAll()
+    if (res.all { it == null }) null else res.flatMapIndexed { i, r -> r ?: List(blocos[i].size) { "" } }
+}
+
+// ---------- Playlists do beats ----------
+data class PlDef(val id: String, val title: String, val sub: String, val c1: Long, val c2: Long)
+val PLS = listOf(
+    PlDef("global", "Top Global", "As músicas mais tocadas do mundo", 0xFF2A7BFF, 0xFF0B2C8C),
+    PlDef("brasil", "Top Brasil", "O que o Brasil mais escuta", 0xFF19C75A, 0xFF0A6B3A),
+    PlDef("pops", "Top Pops", "Os maiores sucessos do pop", 0xFFFF4FA3, 0xFF8A1E7A),
+    PlDef("rnb", "Melhores R&B", "O melhor do R&B e do soul", 0xFFFF8A1A, 0xFF9A2A0A)
+)
+
+suspend fun chartIds(url: String): List<String> {
+    val f = get(url)?.optJSONObject("feed") ?: return emptyList()
+    f.optJSONArray("results")?.let { a -> return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("id")?.takeIf { x -> x.isNotEmpty() } } }
+    f.optJSONArray("entry")?.let { a -> return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optJSONObject("id")?.optJSONObject("attributes")?.optString("im:id")?.takeIf { x -> x.isNotEmpty() } } }
+    return emptyList()
+}
+
+suspend fun songsByIds(ids: List<String>, cc: String): List<Track> {
+    if (ids.isEmpty()) return emptyList()
+    val a = get("https://itunes.apple.com/lookup?id=${ids.joinToString(",")}&country=$cc")?.optJSONArray("results") ?: return emptyList()
+    val by = (0 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }.associateBy { it.optString("trackId") }
+    return ids.mapNotNull { by[it] }.map { toTrack(it) }
+}
+
+suspend fun searchSongs(term: String, cc: String): List<Track> {
+    val a = get("https://itunes.apple.com/search?entity=song&media=music&limit=50&country=$cc&term=${Uri.encode(term)}")?.optJSONArray("results") ?: return emptyList()
+    return (0 until a.length()).map { a.getJSONObject(it) }.filter { it.has("previewUrl") }.map { toTrack(it) }.distinctBy { norm(it.name + it.artist) }
+}
+
+fun rssNovo(cc: String) = "https://rss.applemarketingtools.com/api/v2/$cc/music/most-played/50/songs.json"
+fun rssGenero(cc: String, g: Int) = "https://itunes.apple.com/$cc/rss/topsongs/limit=50/genre=$g/json"
+
+suspend fun playlistTracks(id: String): List<Track> = coroutineScope {
+    val r: List<Track> = when (id) {
+        "global" -> {
+            val ls = listOf("us", "gb", "br", "mx", "de", "fr").map { cc -> async { songsByIds(chartIds(rssNovo(cc)).take(12), cc.uppercase()) } }.awaitAll()
+            val out = mutableListOf<Track>()
+            for (k in 0 until (ls.maxOfOrNull { it.size } ?: 0)) ls.forEach { l -> l.getOrNull(k)?.let { out.add(it) } }
+            out.distinctBy { norm(it.name + it.artist) }
+        }
+        "brasil" -> songsByIds(chartIds(rssNovo("br")).take(50), "BR").ifEmpty { songsByIds(chartIds(rssGenero("br", 14)).take(50), "BR") }
+        "pops" -> songsByIds(chartIds(rssGenero("us", 14)).take(50), "US")
+        else -> songsByIds(chartIds(rssGenero("us", 15)).take(50), "US")
+    }
+    if (r.isNotEmpty()) r else when (id) {
+        "global" -> searchSongs("top hits", "US")
+        "brasil" -> searchSongs("hits brasil", "BR")
+        "pops" -> searchSongs("pop hits", "US")
+        else -> searchSongs("r&b soul hits", "US")
+    }
+}
+
+// ---------- Os Melhores (perfis em destaque) ----------
+data class Feat(val id: Long, val name: String, val photo: String?)
+val FEAT = listOf(1754597620L to "Tocanna", 1804418508L to "Tuko Moedas", 1831894114L to "Asguizz", 1848389054L to "Porkani", 1766758983L to "Veada", 1755830864L to "Boar Carter")
+
+suspend fun featured(id: Long, slug: String): Feat = coroutineScope {
+    val nm = async { get("https://itunes.apple.com/lookup?id=$id")?.optJSONArray("results")?.optJSONObject(0)?.optString("artistName")?.takeIf { it.isNotEmpty() } }
+    val lt = async { latest(id)?.album?.art }
+    val name = nm.await() ?: slug
+    Feat(id, name, lt.await() ?: photoOf(name))
+}
+
+// ---------- Estatísticas reais do Replay ----------
+data class Item(val name: String, val sub: String, val img: String, val secs: Float)
+class MonthData(val total: Float, val artists: List<Item>, val songs: List<Item>)
+
+class Stats(ctx: Context) {
+    private val sp = ctx.getSharedPreferences("replay", Context.MODE_PRIVATE)
+    private val cache = HashMap<String, JSONObject>()
+    var tick by mutableStateOf(0)
+    private var acc = 0f
+    private var sv = 0f
+    private fun key(y: Int, m: Int) = String.format(Locale.US, "%04d-%02d", y, m)
+    private fun load(k: String): JSONObject = cache.getOrPut(k) { runCatching { JSONObject(sp.getString(k, null) ?: "{}") }.getOrElse { JSONObject() } }
+    private fun bump(o: JSONObject, grp: String, key: String, s: Float, img: String, name: String, sub: String) {
+        val g = o.optJSONObject(grp) ?: JSONObject().also { o.put(grp, it) }
+        val e = g.optJSONObject(key) ?: JSONObject().also { g.put(key, it) }
+        e.put("s", e.optDouble("s", 0.0) + s); e.put("img", img); e.put("n", name); e.put("r", sub)
+    }
+    fun add(t: Track, s: Float) {
+        if (s <= 0f) return
+        val c = Calendar.getInstance(); val k = key(c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1); val o = load(k)
+        o.put("t", o.optDouble("t", 0.0) + s)
+        creditos(t.artist, t.name).ifEmpty { listOf(t.artist) }.forEach { n -> bump(o, "a", n, s, t.art, n, "") }
+        bump(o, "s", t.name + "|" + t.artist, s, t.art, t.name, t.artist)
+        acc += s; sv += s
+        if (acc >= 1f) { acc = 0f; tick++ }
+        if (sv >= 5f) { sv = 0f; save() }
+    }
+    fun save() { val e = sp.edit(); cache.forEach { (k, v) -> e.putString(k, v.toString()) }; e.apply() }
+    fun month(y: Int, m: Int): MonthData {
+        @Suppress("UNUSED_VARIABLE") val tk = tick
+        val o = load(key(y, m))
+        fun items(g: String): List<Item> {
+            val j = o.optJSONObject(g) ?: return emptyList()
+            return j.keys().asSequence().map { j.getJSONObject(it) }.map { Item(it.optString("n"), it.optString("r"), it.optString("img"), it.optDouble("s", 0.0).toFloat()) }.sortedByDescending { it.secs }.toList()
+        }
+        return MonthData(o.optDouble("t", 0.0).toFloat(), items("a"), items("s"))
+    }
+}
+
+// ---------- Player ----------
+class Pl(private val ctx: Context, private val stats: Stats) {
+    var q by mutableStateOf(listOf<Track>()); var i by mutableStateOf(0); var playing by mutableStateOf(false)
+    var pos by mutableStateOf(0f); var posMs by mutableStateOf(0); var dur by mutableStateOf(30f)
+    val cur get() = q.getOrNull(i)
+    private var mp: MediaPlayer? = null
+    private var ready = false
+    private var fails = 0
+    private var last = System.nanoTime()
+    private val h = Handler(Looper.getMainLooper())
+    private val loop = object : Runnable { override fun run() { tick(); h.postDelayed(this, 200) } }
+    init { h.postDelayed(loop, 200) }
+
+    fun play(l: List<Track>, k: Int) { q = l; i = k; fails = 0; load() }
+    private fun fail() { fails++; if (fails < q.size) next() else playing = false }
+    private fun load() {
+        mp?.release(); mp = null
+        val t = cur ?: return
+        pos = 0f; posMs = 0; ready = false
+        val m = MediaPlayer(); mp = m
+        try { m.setWakeMode(ctx, PowerManager.PARTIAL_WAKE_LOCK) } catch (e: Exception) { }
+        m.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+        m.setOnPreparedListener { x -> if (mp === x) { dur = x.duration / 1000f; ready = true; fails = 0; x.start(); playing = true; last = System.nanoTime() } }
+        m.setOnCompletionListener { x -> if (mp === x) next() }          // terminou -> próxima música
+        m.setOnErrorListener { x, _, _ -> if (mp === x) fail(); true }   // erro -> pula
+        try { m.setDataSource(t.url); m.prepareAsync() } catch (e: Exception) { fail() }
+    }
+    fun toggle() {
+        val m = mp ?: return
+        if (!ready) return
+        if (m.isPlaying) { m.pause(); playing = false; stats.save() } else { m.start(); playing = true; last = System.nanoTime() }
+    }
     fun next() { if (q.isNotEmpty()) { i = (i + 1) % q.size; load() } }
     fun prev() { if (q.isNotEmpty()) { i = (i - 1 + q.size) % q.size; load() } }
-    fun seek(f: Float) { mp?.seekTo((f.coerceIn(0f, 1f) * dur * 1000).toInt()) }
-    fun tick() { mp?.let { if (playing) pos = it.currentPosition / 1000f } }
-    fun release() { mp?.release(); mp = null; playing = false }
+    fun seek(f: Float) { if (ready) seekMs((f.coerceIn(0f, 1f) * dur * 1000).toInt()) }
+    fun seekMs(ms: Int) { if (ready) { val x = ms.coerceIn(0, (dur * 1000).toInt()); mp?.seekTo(x); posMs = x; pos = x / 1000f } }
+    fun nowMs(): Int = if (ready) (try { mp?.currentPosition ?: 0 } catch (e: Exception) { 0 }) else 0
+    private fun tick() {
+        val now = System.nanoTime(); val dt = ((now - last) / 1e9f).coerceIn(0f, 1f); last = now
+        val m = mp ?: return
+        if (!ready) return
+        val on = try { m.isPlaying } catch (e: Exception) { false }
+        if (on) { val c = m.currentPosition; posMs = c; pos = c / 1000f; cur?.let { stats.add(it, dt) } }
+    }
+    fun release() { h.removeCallbacks(loop); mp?.release(); mp = null; stats.save() }
 }
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(b: Bundle?) { super.onCreate(b); enableEdgeToEdge(); setContent { App() } }
+    private lateinit var stats: Stats
+    override fun onCreate(b: Bundle?) {
+        super.onCreate(b); enableEdgeToEdge()
+        stats = Stats(applicationContext)
+        setContent { App(stats) }
+    }
+    override fun onStop() { super.onStop(); stats.save() }
 }
+
+// ---------- Utilitários de UI ----------
+val LocalArtist = staticCompositionLocalOf<(String, Long, String?) -> Unit> { { _, _, _ -> } }
 
 @Composable fun T(s: String, sz: Int = 16, w: Int = 400, c: Color = Color.Unspecified, m: Modifier = Modifier, ml: Int = 1, a: TextAlign? = null) =
     Text(s, m, c, sz.sp, fontWeight = FontWeight(w), fontFamily = Sf, textAlign = a, maxLines = ml, overflow = TextOverflow.Ellipsis,
         lineHeight = (sz * 1.12f).sp, letterSpacing = if (sz >= 24) (-.02f * sz).sp else 0.sp)
+
+// Nome de artista: tocar abre o perfil do artista, em qualquer tela
+@Composable fun AT(n: String, id: Long = 0, art: String? = null, sz: Int = 16, w: Int = 400, c: Color = Color.Unspecified, m: Modifier = Modifier, ml: Int = 1, a: TextAlign? = null) {
+    val go = LocalArtist.current
+    T(n, sz, w, c, m.pointerInput(n) { detectTapGestures { go(n, id, art) } }, ml, a)
+}
+
+// Vários artistas (feat, "A & B"): cada nome é um toque separado e abre o próprio perfil
+@Composable fun ATs(artist: String, title: String = "", id: Long = 0, art: String? = null, sz: Int = 16, w: Int = 400, c: Color = Color.Unspecified, m: Modifier = Modifier, a: TextAlign? = null) {
+    val nomes = remember(artist, title) { creditos(artist, title) }
+    if (nomes.size <= 1) AT(nomes.firstOrNull() ?: artist, id, art, sz, w, c, m, 1, a)
+    else Row(m, verticalAlignment = Alignment.CenterVertically) {
+        nomes.forEachIndexed { k, n ->
+            if (k > 0) T(if (k == nomes.size - 1) " & " else ", ", sz, w, c)
+            AT(n, idDe(artist, k, id), art, sz, w, c, Modifier.weight(1f, false))
+        }
+    }
+}
 
 @Composable fun Modifier.enter(i: Int): Modifier {
     val a = remember { Animatable(0f) }
@@ -285,20 +511,22 @@ class MainActivity : ComponentActivity() {
     return c1 to c2
 }
 
-@Composable fun Av() = Box(Modifier.size(34.dp).clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)))
+// cor suave (mutada) da foto, usada no fundo do perfil do artista
+@Composable fun rememberMuted(url: String?): Color {
+    val ctx = LocalContext.current
+    var c by remember { mutableStateOf(Color(0xFF3A3A3C)) }
+    LaunchedEffect(url) {
+        if (url == null) return@LaunchedEffect
+        val r = ctx.imageLoader.execute(ImageRequest.Builder(ctx).data(url).allowHardware(false).size(200).build())
+        val bmp = (r as? SuccessResult)?.drawable?.toBitmap() ?: return@LaunchedEffect
+        val pa = withContext(Dispatchers.Default) { Palette.from(bmp).generate() }
+        c = Color(pa.getMutedColor(pa.getDominantColor(0xFF3A3A3C.toInt())))
+    }
+    val a by animateColorAsState(c, tween(700), label = "mc")
+    return a
+}
 
-// Cada artista é um texto clicável que abre o PRÓPRIO perfil: "A, B & C"
-@Composable fun Names(n: List<String>, sz: Int, c: Color, open: (String) -> Unit, h: Arrangement.Horizontal = Arrangement.Start) =
-    FlowRow(Modifier, horizontalArrangement = h) {
-        n.forEachIndexed { k, x ->
-            T(x, sz, 400, c, Modifier.clickable { open(x) })
-            if (k < n.size - 1) T(if (k == n.size - 2) " & " else ", ", sz, 400, c)
-        }
-    }
-@Composable fun CBtn(i: ImageVector, on: Boolean = false, f: () -> Unit = {}) =
-    Box(Modifier.size(34.dp).clip(CircleShape).background(if (on) Color.White else Color.White.copy(alpha = .2f)).clickable(onClick = f), Alignment.Center) {
-        Icon(i, null, Modifier.size(18.dp), if (on) Color.Black else Color.White)
-    }
+@Composable fun Av() = Box(Modifier.size(34.dp).clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)))
 @Composable fun Rw(c: LazyListScope.() -> Unit) = LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), content = c)
 @Composable fun H(t: String) = Row(Modifier.padding(top = 22.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { T(t, 20, 700); Icon(Icons.Filled.ChevronRight, null, tint = Sub) }
 
@@ -310,12 +538,12 @@ class MainActivity : ComponentActivity() {
 
 @Composable fun Pick(t: String, s: String, b: Brush, w: Int, h: Int, sz: Int, m: Modifier = Modifier, onClick: () -> Unit = {}) =
     Column(m.size(w.dp, h.dp).tap(onClick).clip(RoundedCornerShape(14.dp)).background(b).padding(14.dp), Arrangement.SpaceBetween) {
-        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" Music", 12, 600, Color.White) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" beats", 12, 600, Color.White) }
         Column { T(t, sz, 800, Color.White, ml = 2); T(s, 11, 400, Color.White.copy(alpha = .85f), Modifier.padding(top = 4.dp), 2) }
     }
 
 @Composable fun Cv(a: Album, open: (Album) -> Unit, m: Modifier = Modifier.width(118.dp)) = Column(m.tap { open(a) }) {
-    Img(a.art, Modifier.fillMaxWidth().aspectRatio(1f)); T(a.name, 12, 600, m = Modifier.padding(top = 6.dp)); T(a.artist, 11, 400, Sub)
+    Img(a.art, Modifier.fillMaxWidth().aspectRatio(1f)); T(a.name, 12, 600, m = Modifier.padding(top = 6.dp)); ATs(a.artist, "", a.artistId, a.art, 11, 400, Sub)
 }
 @Composable fun Grid(l: List<Album>, open: (Album) -> Unit, n: Int = 3) = l.chunked(n).forEachIndexed { r, row ->
     Row(Modifier.padding(bottom = 14.dp), Arrangement.spacedBy(12.dp)) {
@@ -330,127 +558,174 @@ class MainActivity : ComponentActivity() {
     HorizontalDivider(color = Color.Gray.copy(alpha = .25f))
 }
 
+@Composable fun PlCard(p: PlDef, m: Modifier = Modifier, onClick: () -> Unit) =
+    Column(m.tap(onClick).aspectRatio(.8f).clip(RoundedCornerShape(14.dp)).background(bg(p.c1, p.c2)).padding(14.dp), Arrangement.SpaceBetween) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(14.dp), Color.White); T(" beats", 12, 600, Color.White) }
+        Column { T(p.title.replaceFirst(" ", "\n"), 22, 800, Color.White, ml = 2); T(p.sub, 11, 400, Color.White.copy(alpha = .85f), Modifier.padding(top = 4.dp), 2) }
+    }
+
 typealias Sec = Map<String, List<Album>>
 
-@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit) = Scr("Home", { Av() }) {
-    T("Made for You", 12, 600, Sub); H("Top Picks for You")
+// ---------- Telas ----------
+@Composable fun Home(sec: Sec, open: (Album) -> Unit, rp: () -> Unit, mix: (List<Album>) -> Unit, pls: (PlDef) -> Unit, feat: List<Feat>) = Scr("Início", { Av() }) {
+    val go = LocalArtist.current
+    T("Feito para Você", 12, 600, Sub); H("Seleção para Você")
     Rw {
-        item { Pick("Friends\nMix", "Card B, Offset, Kendrick Lamar, JID and more", bg(0xFF2A7BFF, 0xFF0B2C8C), 200, 262, 36, Modifier.enter(0)) }
-        item { Pick("All\nTime", "Replay: your most played songs", bg(0xFFFF3B5C, 0xFFB8002A), 200, 262, 36, Modifier.enter(1), rp) }
-        item { Pick("Chill\nMix", "Calm tracks for focus", bg(0xFF7AD0C6, 0xFF2F6F8F), 200, 262, 36, Modifier.enter(2)) }
+        item { Pick("Mix de\nAmigos", "Card B, Offset, Kendrick Lamar, JID e mais", bg(0xFF2A7BFF, 0xFF0B2C8C), 200, 262, 36, Modifier.enter(0)) { mix(sec["hip hop"].orEmpty()) } }
+        item { Pick("Todos os\nTempos", "Replay: suas músicas mais tocadas", bg(0xFFFF3B5C, 0xFFB8002A), 200, 262, 36, Modifier.enter(1), rp) }
+        item { Pick("Mix\nRelax", "Faixas calmas para focar", bg(0xFF7AD0C6, 0xFF2F6F8F), 200, 262, 36, Modifier.enter(2)) { mix(sec["electronic"].orEmpty()) } }
     }
-    H("Recently Played"); val l = sec["pop"].orEmpty(); Empty(l)
+    H("Playlists do beats")
+    Rw { itemsIndexed(PLS) { k, p -> PlCard(p, Modifier.width(165.dp).enter(k)) { pls(p) } } }
+    H("Os Melhores")
+    Rw { itemsIndexed(feat) { k, f ->
+        Column(Modifier.width(96.dp).enter(k).tap { go(f.name, f.id, f.photo) }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Img(f.photo, Modifier.size(96.dp), CircleShape); T(f.name, 12, 600, m = Modifier.padding(top = 6.dp), a = TextAlign.Center)
+        }
+    } }
+    H("Tocados Recentemente"); val l = sec["pop"].orEmpty(); Empty(l)
     Rw { itemsIndexed(l) { k, a -> Cv(a, open, Modifier.width(118.dp).enter(k)) } }
-    H("Made for You")
+    H("Feito para Você")
     Rw {
-        item { Pick("Favourites\nMix", "Updated daily", bg(0xFF7A3DFF, 0xFFE04CFF), 165, 215, 22, Modifier.enter(0)) }
-        item { Pick("Get Up!\nMix", "Start your day", bg(0xFFFF8A1A, 0xFFE8380A), 165, 215, 22, Modifier.enter(1)) }
-        item { Pick("New Music\nMix", "Fresh finds", bg(0xFF19C7A5, 0xFF0A7A9A), 165, 215, 22, Modifier.enter(2)) }
+        item { Pick("Mix de\nFavoritas", "Atualizado diariamente", bg(0xFF7A3DFF, 0xFFE04CFF), 165, 215, 22, Modifier.enter(0)) { mix(sec["pop"].orEmpty()) } }
+        item { Pick("Mix\nAcorda!", "Comece o seu dia", bg(0xFFFF8A1A, 0xFFE8380A), 165, 215, 22, Modifier.enter(1)) { mix(sec["rock"].orEmpty()) } }
+        item { Pick("Mix de\nNovidades", "Descobertas recentes", bg(0xFF19C7A5, 0xFF0A7A9A), 165, 215, 22, Modifier.enter(2)) { mix(sec["r&b"].orEmpty()) } }
     }
 }
 
-@Composable fun NewS(sec: Sec, open: (Album) -> Unit) = Scr("New", { Av() }) {
+@Composable fun NewS(sec: Sec, open: (Album) -> Unit) = Scr("Novidades", { Av() }) {
     val f = sec["electronic"].orEmpty(); Empty(f)
     f.firstOrNull()?.let { a -> Column(Modifier.fillMaxWidth().enter(0).tap { open(a) }) {
-        Img(a.art, Modifier.fillMaxWidth().aspectRatio(1.3f), RoundedCornerShape(14.dp)); T(a.name, 17, 700, m = Modifier.padding(top = 8.dp)); T(a.artist, 14, 400, Sub) } }
-    H("Latest Releases"); Grid(sec["hip hop"].orEmpty(), open)
+        Img(a.art, Modifier.fillMaxWidth().aspectRatio(1.3f), RoundedCornerShape(14.dp)); T(a.name, 17, 700, m = Modifier.padding(top = 8.dp)); ATs(a.artist, "", a.artistId, a.art, 14, 400, Sub) } }
+    H("Últimos Lançamentos"); Grid(sec["hip hop"].orEmpty(), open)
 }
 
-@Composable fun Radio(sec: Sec, open: (Album) -> Unit) = Scr("Radio", { Av() }) {
-    Pick("Music 1", "Live radio, 24/7", bg(0xFFFF3B5C, 0xFF7A0618), 340, 200, 38, Modifier.enter(0))
-    H("Stations")
+@Composable fun Radio(sec: Sec, open: (Album) -> Unit, mix: (List<Album>) -> Unit) = Scr("Rádio", { Av() }) {
+    Pick("Music 1", "Ao vivo, 24 horas por dia", bg(0xFFFF3B5C, 0xFF7A0618), 340, 200, 38, Modifier.enter(0)) { mix(sec["pop"].orEmpty() + sec["hip hop"].orEmpty()) }
+    H("Estações")
     sec["r&b"].orEmpty().take(6).forEachIndexed { k, a ->
         Row(Modifier.fillMaxWidth().enter(k).tap { open(a) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Img(a.art, Modifier.size(54.dp)); Column(Modifier.padding(start = 14.dp).weight(1f)) { T(a.artist, 17); T("Live now", 12, 400, Sub) }
+            Img(a.art, Modifier.size(54.dp)); Column(Modifier.padding(start = 14.dp).weight(1f)) { ATs(a.artist, "", a.artistId, a.art, 17); T("Ao vivo agora", 12, 400, Sub) }
             Icon(Icons.Filled.ChevronRight, null, tint = Sub)
         }
     }
 }
 
-@Composable fun Lib(sec: Sec, open: (Album) -> Unit) = Scr("Library", { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MoreHoriz, null, tint = Red); Spacer(Modifier.width(12.dp)); Av() } }) {
+@Composable fun Lib(sec: Sec, open: (Album) -> Unit) = Scr("Biblioteca", { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MoreHoriz, null, tint = Red); Spacer(Modifier.width(12.dp)); Av() } }) {
     val l = sec["r&b"].orEmpty(); Empty(l); Grid(l.take(6), open); Spacer(Modifier.height(6.dp))
-    Li(Icons.Filled.QueueMusic, "Playlists", 0); Li(Icons.Filled.Mic, "Artists", 1); Li(Icons.Filled.Album, "Albums", 2); Li(Icons.Filled.MusicNote, "Songs", 3)
-    H("Recently Added"); Rw { itemsIndexed(sec["rock"].orEmpty()) { k, a -> Cv(a, open, Modifier.width(150.dp).enter(k)) } }
+    Li(Icons.Filled.QueueMusic, "Playlists", 0); Li(Icons.Filled.Mic, "Artistas", 1); Li(Icons.Filled.Album, "Álbuns", 2); Li(Icons.Filled.MusicNote, "Músicas", 3)
+    H("Adicionados Recentemente"); Rw { itemsIndexed(sec["rock"].orEmpty()) { k, a -> Cv(a, open, Modifier.width(150.dp).enter(k)) } }
 }
 
-@Composable fun SearchS(open: (Album) -> Unit, openArtist: (String) -> Unit) = Scr("Search") {
-    var q by remember { mutableStateOf("") }; var res by remember { mutableStateOf(listOf<Album>()) }; var ars by remember { mutableStateOf(listOf<String>()) }
-    LaunchedEffect(q) {
-        if (q.isBlank()) { res = emptyList(); ars = emptyList() } else {
-            delay(400)
-            val (a, b) = coroutineScope { val x = async { albums(q) }; val y = async { artistNames(q) }; x.await() to y.await() }
-            res = a; ars = b
-        }
-    }
+@Composable fun SearchS(open: (Album) -> Unit) = Scr("Buscar") {
+    var q by remember { mutableStateOf("") }; var res by remember { mutableStateOf(listOf<Album>()) }
+    LaunchedEffect(q) { if (q.isBlank()) res = emptyList() else { delay(400); res = albums(q) } }
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.Gray.copy(alpha = .16f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.Search, null, Modifier.size(20.dp), Sub); Spacer(Modifier.width(8.dp))
         BasicTextField(q, { q = it }, Modifier.weight(1f), singleLine = true, textStyle = TextStyle(color = LocalContentColor.current, fontSize = 16.sp, fontFamily = Sf), cursorBrush = SolidColor(Red),
-            decorationBox = { inner -> if (q.isEmpty()) T("Artists, Songs, Lyrics and More", 16, 400, Sub); inner() })
+            decorationBox = { inner -> if (q.isEmpty()) T("Artistas, Músicas, Letras e mais", 16, 400, Sub); inner() })
     }
     if (q.isBlank()) {
-        H("Browse Categories")
-        listOf("Spatial Audio" to 280f, "Hits" to 350f, "Hip-Hop" to 30f, "Chill" to 170f, "Dance" to 300f, "Pop" to 330f, "Rock" to 10f, "Workout" to 90f).chunked(2).forEachIndexed { r, row ->
+        H("Explorar Categorias")
+        listOf(Triple("Áudio Espacial", 280f, "dolby atmos"), Triple("Sucessos", 350f, "hits"), Triple("Hip-Hop", 30f, "hip hop"), Triple("Relax", 170f, "chill"),
+            Triple("Dance", 300f, "dance"), Triple("Pop", 330f, "pop"), Triple("Rock", 10f, "rock"), Triple("Treino", 90f, "workout")).chunked(2).forEachIndexed { r, row ->
             Row(Modifier.padding(bottom = 12.dp), Arrangement.spacedBy(12.dp)) {
-                row.forEachIndexed { k, c -> Box(Modifier.weight(1f).height(88.dp).enter(r * 2 + k).tap { q = c.first }.clip(RoundedCornerShape(12.dp)).background(grad(c.second, 30f)).padding(10.dp)) { T(c.first, 16, 700, Color.White) } }
+                row.forEachIndexed { k, c -> Box(Modifier.weight(1f).height(88.dp).enter(r * 2 + k).tap { q = c.third }.clip(RoundedCornerShape(12.dp)).background(grad(c.second, 30f)).padding(10.dp)) { T(c.first, 16, 700, Color.White) } }
             }
         }
-    } else {
-        if (ars.isNotEmpty()) {
-            T("Artists", 20, 700, m = Modifier.padding(top = 18.dp, bottom = 4.dp))
-            ars.forEachIndexed { k, n ->
-                Row(Modifier.fillMaxWidth().enter(k).tap { openArtist(n) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(54.dp).clip(CircleShape).background(grad(n.length * 37f, 40f)), Alignment.Center) { T(n.take(1).uppercase(), 22, 800, Color.White) }
-                    T(n, 16, 600, m = Modifier.padding(start = 14.dp).weight(1f)); Icon(Icons.Filled.ChevronRight, null, tint = Sub)
+    } else res.forEachIndexed { k, a ->
+        Row(Modifier.fillMaxWidth().enter(k).tap { open(a) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Img(a.art, Modifier.size(54.dp)); Column(Modifier.padding(start = 14.dp)) { T(a.name, 16, 600); ATs(a.artist, "", a.artistId, a.art, 13, 400, Sub) }
+        }
+    }
+}
+
+// Replay com contagem real de tempo ouvido
+@Composable fun Replay(st: Stats, back: () -> Unit) = Box(Modifier.fillMaxSize()) {
+    val cal = remember { Calendar.getInstance() }
+    val y = cal.get(Calendar.YEAR); val cur = cal.get(Calendar.MONTH) + 1
+    var sel by remember { mutableStateOf(cur) }
+    val md = st.month(y, sel)
+    val secs = md.total.toInt()
+    val ts by animateIntAsState(secs, tween(1200, easing = FastOutSlowInEasing), label = "m")
+    Box(Modifier.fillMaxWidth().height(340.dp).background(Brush.verticalGradient(listOf(Color(0x9934C759), Color.Transparent))))
+    Scr("Replay", { T("$y", 16, 600) }) {
+        Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 16.dp), Arrangement.spacedBy(16.dp)) {
+            (1..cur).forEach { k -> T(mesesCurtos[k - 1], 14, 600, if (k == sel) LocalContentColor.current else Sub, Modifier.tap { sel = k }) }
+        }
+        val mes = mesesLongos[sel - 1]
+        Text(buildAnnotatedString {
+            if (secs == 0) append("Você ainda não ouviu nada em $mes.")
+            else { append("Você ouviu por "); withStyle(SpanStyle(fontWeight = FontWeight(800))) { append(tempo(ts.toFloat())) }; append(" em $mes.") }
+        }, fontSize = 27.sp, fontWeight = FontWeight(700), fontFamily = Sf, lineHeight = 31.sp)
+        if (md.artists.isEmpty()) T("Toque algumas músicas e seus artistas e músicas mais ouvidos aparecem aqui.", 14, 400, Sub, Modifier.padding(top = 18.dp), 3)
+        else {
+            H("Seus Artistas Mais Ouvidos")
+            Rw { md.artists.take(5).forEachIndexed { k, a -> item {
+                Box(Modifier.size(200.dp, 250.dp).enter(k).clip(RoundedCornerShape(12.dp))) {
+                    Img(a.img, Modifier.fillMaxSize(), RoundedCornerShape(0.dp)); Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .7f)))))
+                    T("${k + 1}", 30, 800, Color.White, Modifier.padding(12.dp))
+                    Column(Modifier.align(Alignment.BottomCenter).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { AT(a.name, 0, a.img, 15, 700, Color.White, ml = 2, a = TextAlign.Center); T(tempo(a.secs), 13, 400, Color.White.copy(alpha = .8f)) }
+                }
+            } } }
+            H("Suas Músicas Mais Ouvidas")
+            md.songs.take(5).forEachIndexed { k, s ->
+                Row(Modifier.fillMaxWidth().enter(k).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("${k + 1}", 15, 600, Sub, Modifier.width(24.dp)); Img(s.img, Modifier.size(50.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) { T(s.name, 16, 600); ATs(s.sub, s.name, 0, s.img, 13, 400, Sub) }
+                    T(tempo(s.secs), 12, 500, Sub)
                 }
             }
-            T("Albums", 20, 700, m = Modifier.padding(top = 14.dp, bottom = 4.dp))
-        }
-        res.forEachIndexed { k, a ->
-            Row(Modifier.fillMaxWidth().enter(k).tap { open(a) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Img(a.art, Modifier.size(54.dp)); Column(Modifier.padding(start = 14.dp)) { T(a.name, 16, 600); T(a.artist, 13, 400, Sub) }
-            }
         }
     }
+    IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Red) }
 }
 
-@Composable fun Replay(sec: Sec, openArtist: (String) -> Unit, back: (() -> Unit)? = null) = Box(Modifier.fillMaxSize()) {
-    Box(Modifier.fillMaxWidth().height(340.dp).background(Brush.verticalGradient(listOf(Color(0x9934C759), Color.Transparent))))
-    var tgt by remember { mutableStateOf(0) }; LaunchedEffect(Unit) { tgt = 8491 }
-    val m by animateIntAsState(tgt, tween(1800, easing = FastOutSlowInEasing), label = "m")
-    Scr("Replay", { T("2025 ⌄", 16, 600) }) {
-        Row(Modifier.padding(top = 4.dp, bottom = 16.dp), Arrangement.spacedBy(16.dp)) { listOf("Jan", "Feb", "Mar", "Apr", "May").forEach { T(it, 14, 600, if (it == "May") LocalContentColor.current else Sub) } }
-        Text(buildAnnotatedString { append("You listened for "); withStyle(SpanStyle(fontWeight = FontWeight(800))) { append("%,d minutes".format(m)) }; append(" in May.") }, fontSize = 27.sp, fontWeight = FontWeight(700), fontFamily = Sf, lineHeight = 31.sp)
-        H("Your Top Artists")
-        Rw { sec["pop"].orEmpty().take(2).forEachIndexed { k, a -> item {
-            Box(Modifier.size(200.dp, 250.dp).enter(k).tap { openArtist(splitNames(a.artist, false).firstOrNull() ?: a.artist) }.clip(RoundedCornerShape(12.dp))) {
-                Img(a.art, Modifier.fillMaxSize(), RoundedCornerShape(0.dp)); Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .7f)))))
-                T("${k + 1}", 30, 800, Color.White, Modifier.padding(12.dp))
-                Column(Modifier.align(Alignment.BottomCenter).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { T(a.artist, 15, 700, Color.White); T("${283 - k * 43} minutes", 13, 400, Color.White.copy(alpha = .8f)) }
-            } } }
-        }
-    }
-    if (back != null) IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Red) }
-}
-
-@Composable fun AlbumS(al: Album, pl: Pl, openArtist: (String) -> Unit, back: () -> Unit) {
+@Composable fun AlbumS(al: Album, pl: Pl, back: () -> Unit) {
     val (c1, _) = rememberPal(al.art); var tr by remember { mutableStateOf(listOf<Track>()) }
     LaunchedEffect(al.id) { tr = tracks(al) }
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Img(al.art, Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)))
             T(al.name, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
-            Names(splitNames(al.artist, false).ifEmpty { listOf(al.artist) }, 19, lerp(c1, Color.White, .55f), openArtist, Arrangement.Center)
-            T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
+            ATs(al.artist, "", al.artistId, al.art, 19, 600, lerp(c1, Color.White, .55f)); T("${al.genre} · ${al.year}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
             Row(Modifier.padding(vertical = 18.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Play", 17, 600, Color.Black)
+                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
             }
             tr.forEachIndexed { k, t ->
-                Row(Modifier.fillMaxWidth().enter(minOf(k + 1, 8)).tap { pl.play(tr, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp))
-                    Column(Modifier.weight(1f)) {
-                        T(t.title, 16, 500, Color.White)
-                        if (t.all.size > 1) Names(t.all, 12, Color.White.copy(alpha = .6f), openArtist)
-                    }
+                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Column(Modifier.weight(1f)) { T(t.name, 16, 500, Color.White); if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 12, 400, Color.White.copy(alpha = .6f)) }; Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = .15f))
+            }
+        }
+        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
+    }
+}
+
+@Composable fun Glass(i: ImageVector, f: () -> Unit) =
+    Box(Modifier.size(38.dp).clip(CircleShape).background(Color.Black.copy(alpha = .3f)).pointerInput(Unit) { detectTapGestures { f() } }, Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
+
+@Composable fun PlaylistS(pd: PlDef, pl: Pl, openBeats: () -> Unit, back: () -> Unit) {
+    var tr by remember { mutableStateOf(listOf<Track>()) }; var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(pd.id) { tr = playlistTracks(pd.id); loaded = true }
+    val c1 = Color(pd.c1)
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(bg(pd.c1, pd.c2)).padding(16.dp)) {
+                Row(Modifier.align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.MusicNote, null, Modifier.size(16.dp), Color.White); T(" beats", 13, 600, Color.White) }
+                T(pd.title, 34, 800, Color.White, Modifier.align(Alignment.BottomStart), 2)
+            }
+            T(pd.title, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
+            T("beats", 19, 600, lerp(c1, Color.White, .55f), Modifier.pointerInput(Unit) { detectTapGestures { openBeats() } })
+            T(if (tr.isEmpty()) (if (loaded) "Playlist indisponível no momento" else "Carregando…") else "Playlist · ${tr.size} músicas", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
+            Row(Modifier.padding(vertical = 18.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
+            }
+            tr.forEachIndexed { k, t ->
+                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(tr, k) }.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp)); Img(t.art, Modifier.size(44.dp), RoundedCornerShape(6.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) { T(t.name, 16, 500, Color.White); ATs(t.artist, t.name, t.artistId, t.art, 13, 400, Color.White.copy(alpha = .6f)) }
                     Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
                 }
                 HorizontalDivider(color = Color.White.copy(alpha = .15f))
@@ -460,127 +735,217 @@ typealias Sec = Map<String, List<Album>>
     }
 }
 
-// Perfil do artista: só músicas em que ele é principal ou colaborador (feat.)
-@Composable fun ArtistS(name: String, pl: Pl, openArtist: (String) -> Unit, back: () -> Unit) {
-    var list by remember(name) { mutableStateOf<List<Track>?>(null) }
-    LaunchedEffect(name) { list = artistTracks(name) }
-    val l = list.orEmpty(); val art = l.firstOrNull()?.art
-    val (c1, _) = rememberPal(art)
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .6f), Color.Black)))) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 200.dp)) {
-            item {
-                Column(Modifier.fillMaxWidth().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.padding(top = 56.dp).enter(0).size(170.dp).shadow(24.dp, CircleShape).clip(CircleShape).background(bg(0xFFC9A7FF, 0xFFFF9EC4)), Alignment.Center) {
-                        if (art != null) Img(art, Modifier.fillMaxSize(), CircleShape) else T(name.take(1).uppercase(), 64, 800, Color.White)
-                    }
-                    T(name, 30, 800, Color.White, Modifier.padding(top = 16.dp), 2, TextAlign.Center)
-                    T(if (list == null) "Carregando…" else "${l.size} músicas", 13, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
-                    Row(Modifier.padding(vertical = 18.dp).tap { list?.let { if (it.isNotEmpty()) pl.play(it, 0) } }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Play", 17, 600, Color.Black)
+// Perfil da plataforma: só playlists disponíveis
+@Composable fun BeatsS(open: (PlDef) -> Unit, back: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 200.dp)) {
+            Box(Modifier.fillMaxWidth().height(320.dp).background(Brush.verticalGradient(listOf(Color(0xFFFA243C), Color(0xFF5A0A18), Color.Black)))) {
+                Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    T("beats", 48, 800, Color.White, a = TextAlign.Center); T("Playlists oficiais", 14, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 4.dp))
+                }
+            }
+            Row(Modifier.padding(horizontal = 18.dp).padding(top = 18.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) { T("Playlists", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+            PLS.chunked(2).forEachIndexed { r, row ->
+                Row(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp), Arrangement.spacedBy(12.dp)) {
+                    row.forEachIndexed { k, p -> PlCard(p, Modifier.weight(1f).enter(r * 2 + k)) { open(p) } }
+                    repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        Box(Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { back() } }
+    }
+}
+
+// Perfil do artista (estilo Apple Music): foto de fundo + blur em degradê atrás dos botões
+@Composable fun ArtistS(p: Page.Art, pl: Pl, open: (Album) -> Unit, back: () -> Unit) {
+    val ctx = LocalContext.current
+    var d by remember(p) { mutableStateOf<ArtistData?>(null) }
+    LaunchedEffect(p) { d = artistData(p.name, p.id) }
+    val photo = d?.let { it.photo ?: p.art }
+    val base = rememberMuted(photo)
+    val top = lerp(base, Color.Black, .3f); val bot = lerp(base, Color.Black, .8f)
+    val songs = d?.top.orEmpty()
+    val lt = d?.latest
+    Box(Modifier.fillMaxSize().background(top)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            Box(Modifier.fillMaxWidth().height(560.dp)) {
+                if (photo != null) {
+                    AsyncImage(model = photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+                    // cópia desfocada da foto, revelada em degradê de baixo para cima (sem linha de divisão)
+                    Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent { drawContent(); drawRect(Brush.verticalGradient(0f to Color.Transparent, .5f to Color.Transparent, .85f to Color.Black), blendMode = BlendMode.DstIn) }
+                        .blur(32.dp)) {
+                        AsyncImage(model = photo, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
                     }
                 }
-                if (list != null && l.isEmpty()) T("Nenhuma música encontrada.", 14, 400, Color.White.copy(alpha = .6f), Modifier.padding(vertical = 20.dp))
-                if (l.isNotEmpty()) T("Músicas", 20, 700, Color.White, Modifier.padding(top = 4.dp, bottom = 6.dp))
+                Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .55f to Color.Transparent, .8f to top.copy(alpha = .6f), 1f to top)))
+                Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp).padding(bottom = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .28f)).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.CalendarToday, null, Modifier.size(12.dp), Color.White); T("  Próximos Shows", 11, 600, Color.White)
+                    }
+                    T(p.name, 36, 700, Color.White, Modifier.padding(top = 8.dp), 2, TextAlign.Center)
+                    Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
+                        Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(40.dp), Color.Black) }
+                        Spacer(Modifier.width(30.dp)); Icon(Icons.Filled.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
+                    }
+                }
             }
-            itemsIndexed(l) { k, t ->
-                val isMain = t.mains.any { nrm(it) == nrm(name) }
-                Row(Modifier.fillMaxWidth().enter(minOf(k, 6)).tap { pl.play(list.orEmpty(), k) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Img(t.art, Modifier.size(50.dp), RoundedCornerShape(6.dp))
+            Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(top, bot))).padding(bottom = 200.dp)) {
+                if (lt != null) Row(Modifier.padding(horizontal = 18.dp).padding(top = 4.dp).fillMaxWidth().enter(0).tap { open(lt) }.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = .14f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Img(lt.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                        T(t.title, 16, 600, Color.White)
-                        Names(t.all, 13, Color.White.copy(alpha = .6f), openArtist)
+                        T(d?.latestDate.orEmpty(), 11, 500, Color.White.copy(alpha = .6f)); T(lt.name, 16, 700, Color.White)
+                        T("${d?.latestCount ?: 0} ${if ((d?.latestCount ?: 0) == 1) "música" else "músicas"}", 12, 400, Color.White.copy(alpha = .6f))
                     }
-                    if (!isMain) T("feat.", 11, 600, Color.White.copy(alpha = .8f), Modifier.padding(start = 8.dp).clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = .16f)).padding(horizontal = 8.dp, vertical = 3.dp))
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(Color.White.copy(alpha = .16f)), Alignment.Center) { Icon(Icons.Filled.Add, null, Modifier.size(18.dp), Color.White) }
                 }
-            }
-        }
-        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
-    }
-}
-
-// Letra sincronizada (+ tradução linha a linha)
-@Composable fun LyricsView(pl: Pl, t: Track) {
-    val key = t.key; val lang = remember { Locale.getDefault().language }
-    var d by remember(key) { mutableStateOf(pl.lyCache[key]) }
-    var fail by remember(key) { mutableStateOf(false) }
-    var tr by remember(key) { mutableStateOf(pl.trCache[key]) }
-    var busy by remember(key) { mutableStateOf(false) }
-    var trFail by remember(key) { mutableStateOf(false) }
-    LaunchedEffect(key) {
-        if (d == null) {
-            val r = lyrics(t)
-            if (r == null) { fail = true } else { pl.lyCache[key] = r; d = r }
-        }
-    }
-    LaunchedEffect(key, pl.trOn, d) {
-        val x = d
-        if (pl.trOn && tr == null && x != null) {
-            busy = true; trFail = false
-            try {
-                val r = translateAll(x.lines.map { it.text }, lang)
-                if (r != null) { pl.trCache[key] = r; tr = r } else { trFail = true }
-            } finally { busy = false }
-        }
-    }
-    val x = d
-    if (x == null) {
-        Box(Modifier.fillMaxSize(), Alignment.Center) {
-            if (fail) T("Letra não disponível para esta música", 16, 600, Color.White.copy(alpha = .75f), a = TextAlign.Center, ml = 3)
-            else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(modifier = Modifier.size(28.dp), color = Color.White, strokeWidth = 2.dp)
-                T("Buscando letra…", 14, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 12.dp))
-            }
-        }
-    } else {
-        // Prévia = clipe de 30s de um ponto desconhecido da música. Depois que o usuário marca a linha que está ouvindo,
-        // sabemos onde a prévia começa (calib) e mostramos SÓ as linhas que caem nesses 30s. Com áudio completo (> 45s) mostra tudo.
-        val preview = pl.dur <= 45f
-        val calib: Float? = if (!preview) 0f else pl.offs[key]
-        val active = x.synced && calib != null
-        val st = pl.pos + (calib ?: 0f) + .3f
-        val vis = if (active && preview) {
-            val lo = (calib ?: 0f) - 1.5f; val hi = (calib ?: 0f) + pl.dur + .5f
-            x.lines.withIndex().filter { it.value.ms / 1000f in lo..hi }
-        } else x.lines.withIndex().toList()
-        val cur = if (active) vis.indexOfLast { it.value.ms / 1000f <= st } else -1
-        val ls = rememberLazyListState()
-        LaunchedEffect(cur) { if (cur >= 0) ls.animateScrollToItem((cur - 1).coerceAtLeast(0)) }
-        Column(Modifier.fillMaxSize()) {
-            val msg = when {
-                busy -> "Traduzindo…"
-                trFail && pl.trOn -> "Tradução indisponível"
-                !x.synced -> "Letra sem sincronização"
-                calib == null -> "Toque na linha que está tocando agora"
-                else -> null
-            }
-            val pill = Modifier.padding(top = 10.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .16f))
-            if (msg != null) T(msg, 12, 600, Color.White.copy(alpha = .85f), pill.padding(horizontal = 12.dp, vertical = 5.dp))
-            else if (preview && calib != null) T("Trecho da prévia · Resincronizar", 12, 600, Color.White.copy(alpha = .85f), pill.clickable { pl.clearOff(key) }.padding(horizontal = 12.dp, vertical = 5.dp))
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), ls, contentPadding = PaddingValues(top = 14.dp, bottom = 140.dp)) {
-                itemsIndexed(vis) { i, iv ->
-                    val ln = iv.value
-                    val al by animateFloatAsState(if (!active) .85f else if (i == cur) 1f else .3f, tween(400), label = "la")
-                    val bl = if (active && cur >= 0) minOf(abs(i - cur), 4) * 1.5f else 0f
-                    val tt = tr?.getOrNull(iv.index)
-                    Column(Modifier.fillMaxWidth().padding(vertical = 11.dp)
-                        .then(if (bl > 0f) Modifier.blur(bl.dp, BlurredEdgeTreatment.Unbounded) else Modifier)
-                        .graphicsLayer { alpha = al }
-                        .clickable(remember { MutableInteractionSource() }, null) {
-                            if (x.synced) {
-                                if (!preview) { pl.seek(ln.ms / 1000f / pl.dur) } else { pl.setOff(key, ln.ms / 1000f - pl.pos) }
+                Row(Modifier.padding(horizontal = 18.dp).padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) { T("Músicas Mais Tocadas", 19, 700, Color.White); Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(alpha = .6f)) }
+                songs.forEachIndexed { k, t ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).enter(k).tap { pl.play(songs, k) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(t.art, Modifier.size(46.dp), RoundedCornerShape(6.dp))
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                T(t.name, 16, 600, Color.White, Modifier.weight(1f, false))
+                                if (t.explicit) Box(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = .3f)).padding(horizontal = 4.dp)) { T("E", 10, 700, Color.White) }
                             }
-                        }) {
-                        Text(ln.text, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight(800), fontFamily = Sf, lineHeight = 34.sp, letterSpacing = (-0.6f).sp)
-                        if (pl.trOn && !tt.isNullOrBlank() && nrm(tt) != nrm(ln.text))
-                            Text(tt, color = Color.White.copy(alpha = .65f), fontSize = 18.sp, fontWeight = FontWeight(600), fontFamily = Sf, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+                            if (creditos(t.artist, t.name).size > 1) ATs(t.artist, t.name, t.artistId, t.art, 13, 400, Color.White.copy(alpha = .6f)) else T(if (t.year.isNotEmpty()) "${t.album} · ${t.year}" else t.album, 13, 400, Color.White.copy(alpha = .6f))
+                        }
+                        Icon(Icons.Filled.MoreHoriz, null, tint = Color.White.copy(alpha = .7f))
                     }
                 }
+                if (d == null) T("Carregando…", 13, 400, Color.White.copy(alpha = .6f), Modifier.padding(18.dp))
+            }
+        }
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+            Glass(Icons.Filled.ArrowBackIosNew) { back() }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${p.name} no beats") }, null)) }
+                Glass(Icons.Filled.MoreHoriz) { }
             }
         }
     }
 }
 
-@Composable fun Now(pl: Pl, openArtist: (String) -> Unit, close: () -> Unit) {
+// ---------- Tela de letra (como no Apple Music) ----------
+const val ATRASO_TOQUE = 450L   // compensa o tempo de reação de quem toca na linha para marcar o trecho
+
+class LyUi { var on by mutableStateOf(false); var trans by mutableStateOf(false) }
+
+// guarda no celular onde a prévia começa em cada música (marca uma vez e pronto)
+class SyncStore(ctx: Context) {
+    private val sp = ctx.getSharedPreferences("lyrics_sync", Context.MODE_PRIVATE)
+    fun get(k: String): Long? = if (sp.contains(k)) sp.getLong(k, 0L) else null
+    fun set(k: String, v: Long) { sp.edit().putLong(k, v).apply() }
+    fun clear(k: String) { sp.edit().remove(k).apply() }
+}
+
+@Composable fun LBtn(on: Boolean, f: () -> Unit, c: @Composable () -> Unit) =
+    Box(Modifier.size(36.dp).clip(CircleShape).background(Color.White.copy(alpha = if (on) .92f else .18f)).clickable(onClick = f), Alignment.Center) { c() }
+
+@Composable fun LinhaLetra(ln: Ly, tr: String?, alvo: Float, desf: Dp, onTap: () -> Unit) {
+    val a by animateFloatAsState(alvo, tween(350), label = "la")
+    val bl by animateDpAsState(desf, tween(350), label = "lb")
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp).graphicsLayer { alpha = a }.blur(bl).pointerInput(ln) { detectTapGestures { onTap() } }) {
+        T(ln.txt, 28, 800, Color.White, ml = 6)
+        if (!tr.isNullOrBlank() && norm(tr) != norm(ln.txt)) T(tr, 17, 600, Color.White.copy(alpha = .75f), Modifier.padding(top = 4.dp), 4)
+    }
+}
+
+@Composable fun Letra(pl: Pl, t: Track, ui: LyUi) {
+    val ctx = LocalContext.current
+    val store = remember { SyncStore(ctx.applicationContext) }
+    val key = remember(t) { norm(t.name) + "|" + norm(t.artist) }
+    var lrc by remember(key) { mutableStateOf<Lrc?>(null) }
+    var feito by remember(key) { mutableStateOf(false) }
+    var off by remember(key) { mutableStateOf(store.get(key)) }
+    LaunchedEffect(key) { lrc = lrcDe(t); feito = true }
+
+    val durMs = (pl.dur * 1000).toLong()
+    val temSync = lrc?.synced?.isNotEmpty() == true
+    val o = off
+    val modoSync = temSync && o != null          // trecho já marcado: só as linhas dos 30 s e acompanhando o áudio
+    val modoMarcar = temSync && o == null        // ainda não marcou: mostra a letra toda para tocar na linha atual
+
+    val shown = remember(lrc, o, durMs) {
+        val l = lrc
+        when {
+            l == null -> emptyList<Ly>()
+            l.synced.isEmpty() -> l.plain.map { Ly(0L, it) }
+            o == null -> l.synced
+            else -> l.synced.filter { it.ms >= o - 1500 && it.ms <= o + durMs + 500 }
+        }
+    }
+    // linha atual = última cujo tempo já passou (com 0,3 s de antecedência)
+    val cur by remember(shown, o, modoSync) { derivedStateOf { if (!modoSync || o == null) -1 else { val g = pl.posMs + o + 300L; var k = -1; for (i in shown.indices) { if (shown[i].ms <= g) k = i else break }; k } } }
+
+    // tradução (Google Tradutor) só das linhas que estão na tela
+    var trad by remember(shown) { mutableStateOf<List<String>?>(null) }
+    var traduzindo by remember(shown) { mutableStateOf(false) }
+    LaunchedEffect(ui.trans, shown) {
+        if (ui.trans && trad == null && shown.isNotEmpty()) {
+            traduzindo = true
+            trad = traduzir(shown.map { it.txt }, Locale.getDefault().language)
+            traduzindo = false
+        }
+    }
+
+    val ls = rememberLazyListState()
+    LaunchedEffect(key, modoSync) { ls.scrollToItem(0) }
+    LaunchedEffect(cur) { if (modoSync && cur >= 0) ls.animateScrollToItem(cur, -(ls.layoutInfo.viewportSize.height / 7)) }
+
+    fun tapLine(ln: Ly) {
+        if (lrc?.synced?.isNotEmpty() != true) return
+        val a = off
+        if (a == null) { val v = (ln.ms - pl.nowMs() + ATRASO_TOQUE).coerceAtLeast(0L); off = v; store.set(key, v) }
+        else pl.seekMs((ln.ms - a).toInt().coerceAtLeast(0))
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Img(t.art, Modifier.size(52.dp), RoundedCornerShape(6.dp))
+            Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                T(t.name, 17, 600, Color.White)
+                ATs(t.artist, t.name, t.artistId, t.art, 15, 400, Color.White.copy(alpha = .7f))
+            }
+            if (feito && shown.isNotEmpty()) {
+                LBtn(ui.trans, { ui.trans = !ui.trans }) {
+                    if (ui.trans && traduzindo) CircularProgressIndicator(Modifier.size(18.dp), Color.Black, 2.dp)
+                    else Icon(Icons.Filled.Translate, null, Modifier.size(19.dp), if (ui.trans) Color.Black else Color.White)
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            LBtn(false, {}) { Icon(Icons.Filled.StarBorder, null, Modifier.size(19.dp), Color.White) }
+            Spacer(Modifier.width(8.dp))
+            LBtn(false, {}) { Icon(Icons.Filled.MoreHoriz, null, Modifier.size(19.dp), Color.White) }
+        }
+        if (modoMarcar) T("Toque na linha que está tocando agora para marcar onde a prévia começa na música.", 12, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 10.dp), 2)
+        else if (feito && lrc != null && !temSync) T("Esta letra não tem tempos, então não acompanha a música.", 12, 500, Color.White.copy(alpha = .7f), Modifier.padding(top = 10.dp), 2)
+
+        Box(Modifier.weight(1f).fillMaxWidth().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent { drawContent(); drawRect(Brush.verticalGradient(0f to Color.Transparent, .06f to Color.Black, .86f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn) }) {
+            when {
+                !feito -> T("Carregando letra…", 15, 500, Color.White.copy(alpha = .7f), Modifier.align(Alignment.Center))
+                shown.isEmpty() -> T(if (lrc == null) "Letra indisponível para esta música" else "Sem letra neste trecho da prévia", 15, 500, Color.White.copy(alpha = .7f), Modifier.align(Alignment.Center), 3, TextAlign.Center)
+                else -> LazyColumn(state = ls, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp)) {
+                    itemsIndexed(shown) { k, ln ->
+                        val alvo = if (!modoSync) .85f else if (cur < 0) .5f else if (k == cur) 1f else (.45f - .08f * (Math.abs(k - cur) - 1)).coerceAtLeast(.18f)
+                        val desf = if (modoSync && cur >= 0 && k != cur) (minOf(Math.abs(k - cur), 4) * 1.3f).dp else 0.dp
+                        LinhaLetra(ln, if (ui.trans) trad?.getOrNull(k) else null, alvo, desf) { tapLine(ln) }
+                    }
+                }
+            }
+        }
+        if (modoSync) Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.Center) {
+            Row(Modifier.clip(CircleShape).background(Color.White.copy(alpha = .18f)).clickable { store.clear(key); off = null }.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp), Color.White); T("  Trecho da prévia · Resincronizar", 12, 600, Color.White)
+            }
+        }
+    }
+}
+
+@Composable fun Now(pl: Pl, ui: LyUi, close: () -> Unit) {
     val t = pl.cur ?: return
     val (c1, c2) = rememberPal(t.art)
     val ph by rememberInfiniteTransition(label = "i").animateFloat(0f, 1f, infiniteRepeatable(tween(8000, easing = LinearEasing), RepeatMode.Reverse), label = "p")
@@ -595,26 +960,20 @@ typealias Sec = Map<String, List<Album>>
     }.pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }
         .statusBarsPadding().navigationBarsPadding().padding(horizontal = 26.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(42.dp, 5.dp).clip(CircleShape).background(Color.White.copy(alpha = .4f)).clickable(onClick = close))
-        if (!pl.lyOpen) {
-            T("AutoMix", 12, 700, Color.White, Modifier.padding(top = 12.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .2f)).padding(horizontal = 12.dp, vertical = 4.dp))
-            Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
-                Crossfade(t.art, label = "cv") { u -> Img(u, Modifier.fillMaxWidth().aspectRatio(1f).graphicsLayer { scaleX = sc; scaleY = sc }.shadow(30.dp, RoundedCornerShape(16.dp)), RoundedCornerShape(16.dp)) }
-            }
-            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
-                    Column { T(x.title, 22, 700, Color.White); Names(x.all, 18, Color.White.copy(alpha = .7f), openArtist) }
+        Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
+            if (l) Letra(pl, t, ui)
+            else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                T("AutoMix", 12, 700, Color.White, Modifier.padding(top = 12.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .2f)).padding(horizontal = 12.dp, vertical = 4.dp))
+                Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
+                    Crossfade(t.art, label = "cv") { u -> Img(u, Modifier.fillMaxWidth().aspectRatio(1f).graphicsLayer { scaleX = sc; scaleY = sc }.shadow(30.dp, RoundedCornerShape(16.dp)), RoundedCornerShape(16.dp)) }
                 }
-                Icon(Icons.Filled.StarBorder, null, tint = Color.White); Spacer(Modifier.width(14.dp)); Icon(Icons.Filled.MoreHoriz, null, tint = Color.White)
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                    AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
+                        Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, Color.White.copy(alpha = .7f)) }
+                    }
+                    Icon(Icons.Filled.StarBorder, null, tint = Color.White); Spacer(Modifier.width(14.dp)); Icon(Icons.Filled.MoreHoriz, null, tint = Color.White)
+                }
             }
-        } else {
-            // Modo letra (como no Apple Music): capa pequena + título/artistas + botão de traduzir
-            Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Img(t.art, Modifier.size(54.dp), RoundedCornerShape(6.dp))
-                Column(Modifier.padding(start = 12.dp, end = 8.dp).weight(1f)) { T(t.title, 16, 700, Color.White); Names(t.all, 14, Color.White.copy(alpha = .7f), openArtist) }
-                CBtn(Icons.Filled.Translate, pl.trOn) { pl.trOn = !pl.trOn }; Spacer(Modifier.width(8.dp))
-                CBtn(Icons.Filled.StarBorder); Spacer(Modifier.width(8.dp)); CBtn(Icons.Filled.MoreHoriz)
-            }
-            Box(Modifier.weight(1f).fillMaxWidth()) { LyricsView(pl, t) }
         }
         Box(Modifier.padding(top = 18.dp).fillMaxWidth().height(18.dp).pointerInput(Unit) { detectTapGestures { pl.seek(it.x / size.width) } }, Alignment.CenterStart) {
             Box(Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
@@ -627,82 +986,84 @@ typealias Sec = Map<String, List<Album>>
             IconButton({ pl.next() }) { Icon(Icons.Filled.SkipNext, null, Modifier.size(42.dp), Color.White) }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-            IconButton({ pl.lyOpen = !pl.lyOpen }, Modifier.clip(CircleShape).background(if (pl.lyOpen) Color.White.copy(alpha = .25f) else Color.Transparent)) {
-                Icon(if (pl.lyOpen) Icons.Filled.ChatBubble else Icons.Filled.ChatBubbleOutline, null, tint = Color.White)
+            Box(Modifier.size(44.dp).clip(CircleShape).background(if (ui.on) Color.White.copy(alpha = .28f) else Color.Transparent).clickable { ui.on = !ui.on }, Alignment.Center) {
+                Icon(Icons.Filled.ChatBubbleOutline, null, tint = Color.White.copy(alpha = if (ui.on) 1f else .85f))
             }
-            IconButton({}) { Icon(Icons.Filled.Cast, null, tint = Color.White.copy(alpha = .85f)) }
-            IconButton({}) { Icon(Icons.Filled.QueueMusic, null, tint = Color.White.copy(alpha = .85f)) }
+            listOf(Icons.Filled.Cast, Icons.Filled.QueueMusic).forEach { Icon(it, null, tint = Color.White.copy(alpha = .85f)) }
         }
     }
 }
 
-@Composable fun App() {
+@Composable fun App(stats: Stats) {
+    val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
     val bgc = if (dark) Color.Black else Color.White; val tx = if (dark) Color.White else Color.Black
     val sf = if (dark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
-    val ctx = LocalContext.current
-    val pl = remember { Pl(ctx.applicationContext) }
-    var dest by remember { mutableStateOf(Dest()) }
-    val stack = remember { mutableStateListOf<Dest>() }          // pilha de navegação (álbum/artista -> voltar)
-    var np by remember { mutableStateOf(false) }                 // player completo SEMPRE começa fechado
-    val sec = remember { mutableStateMapOf<String, List<Album>>() }
+    val pl = remember { Pl(ctx.applicationContext, stats) }
     DisposableEffect(Unit) { onDispose { pl.release() } }
+    val scope = rememberCoroutineScope()
+    var tab by remember { mutableStateOf(0) }; var np by remember { mutableStateOf(false) }   // np = false: o player completo começa fechado
+    val ly = remember { LyUi() }
+    val stack = remember { mutableStateListOf<Page>() }
+    val sec = remember { mutableStateMapOf<String, List<Album>>() }
+    val feat = remember { mutableStateListOf<Feat>().apply { addAll(FEAT.map { Feat(it.first, it.second, null) }) } }
+    LaunchedEffect(Unit) { FEAT.forEachIndexed { k, f -> launch { feat[k] = featured(f.first, f.second) } } }
     LaunchedEffect(Unit) { listOf("pop", "hip hop", "r&b", "rock", "electronic").forEach { k -> launch { sec[k] = albums(k) } } }
-    LaunchedEffect(Unit) { while (true) { delay(200); pl.tick() } }
-    val pop: () -> Unit = { if (stack.isNotEmpty()) dest = stack.removeAt(stack.lastIndex) }
-    val openAlbum: (Album) -> Unit = { a -> stack.add(dest); dest = Dest(dest.tab, a, null, dest.depth + 1) }
-    val openArtist: (String) -> Unit = { n -> np = false; if (dest.artist != n) { stack.add(dest); dest = Dest(dest.tab, null, n, dest.depth + 1) } }
-    val go: (Int) -> Unit = { stack.clear(); dest = Dest(it) }
-    BackHandler(np || stack.isNotEmpty()) { if (np) np = false else pop() }
-    val sub = stack.isNotEmpty()
-    CompositionLocalProvider(LocalContentColor provides tx) {
+    BackHandler(np || stack.isNotEmpty()) { if (np) np = false else stack.removeAt(stack.lastIndex) }
+    val open: (Album) -> Unit = { stack.add(Page.Alb(it)) }
+    val mix: (List<Album>) -> Unit = { l -> scope.launch { val t = l.shuffled().take(3).flatMap { tracks(it) }.shuffled(); if (t.isNotEmpty()) pl.play(t, 0) } }
+    val openArtist: (String, Long, String?) -> Unit = { n, id, art ->
+        np = false
+        val t = stack.lastOrNull()
+        if (!(t is Page.Art && t.name == n)) stack.add(Page.Art(n, id, art))
+    }
+    val openPl: (PlDef) -> Unit = { stack.add(Page.Plst(it)) }
+    val openBeats: () -> Unit = { if (stack.lastOrNull() !is Page.Beats) stack.add(Page.Beats) }
+    val sub = { stack.isNotEmpty() }
+    CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist) {
         Box(Modifier.fillMaxSize().background(bgc)) {
-            AnimatedContent(dest, transitionSpec = {
-                val a = initialState.depth; val b = targetState.depth
-                if (b > a) (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut())
-                else if (b < a) (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
+            AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
+                val push = targetState.depth > initialState.depth; val pop = targetState.depth < initialState.depth
+                if (push) (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut())
+                else if (pop) (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
                 else fadeIn(tween(300)) togetherWith fadeOut(tween(150))
             }, label = "nav") { d ->
                 Box(Modifier.fillMaxSize().background(bgc)) {
-                    when {
-                        d.album != null -> AlbumS(d.album, pl, openArtist, pop)
-                        d.artist != null -> ArtistS(d.artist, pl, openArtist, pop)
-                        else -> when (d.tab) {
-                            0 -> Home(sec, openAlbum) { go(5) }
-                            1 -> NewS(sec, openAlbum)
-                            2 -> Radio(sec, openAlbum)
-                            3 -> Lib(sec, openAlbum)
-                            5 -> Replay(sec, openArtist)
-                            else -> SearchS(openAlbum, openArtist)
-                        }
+                    val back = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
+                    when (val pg = d.page) {
+                        is Page.Alb -> AlbumS(pg.a, pl) { back() }
+                        is Page.Art -> ArtistS(pg, pl, open) { back() }
+                        Page.Rep -> Replay(stats) { back() }
+                        is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
+                        Page.Beats -> BeatsS(openPl) { back() }
+                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, feat); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
                     }
                 }
             }
             Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // mini player: só aparece depois que o usuário toca uma música (ao abrir o app só a navbar aparece)
                 AnimatedVisibility(pl.cur != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
                     pl.cur?.let { t ->
                         Row(Modifier.fillMaxWidth().height(56.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).clickable { np = true }.padding(start = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Img(t.art, Modifier.size(40.dp), RoundedCornerShape(8.dp)); T(t.title, 15, 600, m = Modifier.padding(start = 12.dp).weight(1f))
+                            Img(t.art, Modifier.size(40.dp), RoundedCornerShape(8.dp)); T(t.name, 15, 600, m = Modifier.padding(start = 12.dp).weight(1f))
                             IconButton({ pl.toggle() }) { Crossfade(pl.playing, label = "m") { p -> Icon(if (p) Icons.Filled.Pause else Icons.Filled.PlayArrow, null) } }
                             IconButton({ pl.next() }) { Icon(Icons.Filled.SkipNext, null) }
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(10.dp)) {
-                    Row(Modifier.weight(1f).height(62.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).padding(5.dp)) {
-                        listOf(Triple(Icons.Filled.Home, "Home", 0), Triple(Icons.Filled.GridView, "New", 1), Triple(Icons.Filled.Sensors, "Radio", 2), Triple(Icons.Filled.LibraryMusic, "Library", 3), Triple(Icons.Filled.Replay, "Replay", 5)).forEach { (i, n, k) ->
-                            val on = dest.tab == k && !sub
+                Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                    Row(Modifier.weight(1f).height(60.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).padding(3.dp)) {
+                        listOf(Icons.Filled.Home to "Início", Icons.Filled.GridView to "Novidades", Icons.Filled.Sensors to "Rádio", Icons.Filled.LibraryMusic to "Biblioteca").forEachIndexed { k, (i, n) ->
+                            val on = tab == k && !sub()
                             val col by animateColorAsState(if (on) Red else Sub, label = "ic"); val bk by animateColorAsState(if (on) Color.Gray.copy(alpha = .2f) else Color.Transparent, label = "bk")
-                            Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).background(bk).clickable { go(k) }, Arrangement.Center, Alignment.CenterHorizontally) {
-                                Icon(i, null, Modifier.size(22.dp), col); T(n, 10, 600, col)
+                            Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).background(bk).clickable { stack.clear(); tab = k }, Arrangement.Center, Alignment.CenterHorizontally) {
+                                Icon(i, null, Modifier.size(22.dp), col); T(n, 9, 600, col)
                             }
                         }
                     }
-                    Box(Modifier.size(62.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).clickable { go(4) }, Alignment.Center) { Icon(Icons.Filled.Search, null, tint = if (dest.tab == 4 && !sub) Red else Sub) }
+                    Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(sf).clickable { stack.clear(); tab = 4 }, Alignment.Center) { Icon(Icons.Filled.Search, null, tint = if (tab == 4 && !sub()) Red else Sub) }
                 }
             }
-            AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) { Now(pl, openArtist) { np = false } }
+            AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) { Now(pl, ly) { np = false } }
         }
     }
 }

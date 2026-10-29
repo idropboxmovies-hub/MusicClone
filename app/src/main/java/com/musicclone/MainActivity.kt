@@ -90,6 +90,7 @@ sealed class Page {
     object Rep : Page()
     data class Plst(val p: PlDef) : Page()
     object Beats : Page()
+    object IStudio : Page()
 }
 data class Nav(val tab: Int, val page: Page?, val depth: Int)
 
@@ -1089,7 +1090,12 @@ class SyncStore(ctx: Context) {
                             if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured), pl, open, true, { stack.add(Page.Edit) }) { back() }
                             else AccountS(auth) { back() }
                         }
-                        Page.Edit -> EditarS(auth) { back() }
+                        Page.Edit -> EditarS(auth, { stack.add(Page.IStudio) }) { back() }
+                        Page.IStudio -> IStudioS(
+                            auth.prof?.name ?: "",
+                            { auth.jwt },
+                            { auth.uid }
+                        ) { back() }
                         Page.Rep -> Replay(stats) { back() }
                         is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
                         Page.Beats -> BeatsS(openPl) { back() }

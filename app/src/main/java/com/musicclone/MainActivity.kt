@@ -4,6 +4,7 @@ package com.musicclone
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -12,6 +13,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.view.Surface
+import android.view.TextureView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -54,6 +57,7 @@ import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.drawable.toBitmap
 import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
@@ -92,7 +96,7 @@ fun tempo(s: Float): String {
 }
 
 data class Album(val id: Long, val name: String, val artist: String, val art: String, val genre: String, val year: String, val artistId: Long = 0)
-data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val artistId: Long = 0, val year: String = "", val explicit: Boolean = false, val dur: Int = 0)
+data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val artistId: Long = 0, val year: String = "", val explicit: Boolean = false, val dur: Int = 0, val video: String = "")
 data class ArtistData(val photo: String?, val latest: Album?, val latestCount: Int, val latestDate: String, val top: List<Track>)
 data class Latest(val album: Album, val count: Int, val date: String)
 
@@ -729,11 +733,61 @@ typealias Sec = Map<String, List<Album>>
 // altura do degradê da capa do álbum: ela some atrás do título e termina exatamente nos botões (a partir dali é só o fundo desfocado)
 val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
 
+// Vídeo da capa animada: sem som, em loop, preenchendo a área (corta o excesso como ContentScale.Crop).
+// Pausa quando a música pausa e some (é descartado) quando a tela de letra abre.
+class VidHolder { var mp: MediaPlayer? = null; var vw = 0; var vh = 0; var w = 0; var h = 0 }
+
+@Composable fun CapaVideo(url: String, tocando: Boolean, m: Modifier = Modifier.fillMaxSize()) {
+    val h = remember(url) { VidHolder() }
+    var pronto by remember(url) { mutableStateOf(false) }
+    val tocandoAgora by rememberUpdatedState(tocando)
+    val alpha by animateFloatAsState(if (pronto) 1f else 0f, tween(500), label = "va")
+    DisposableEffect(url) { onDispose { runCatching { h.mp?.release() }; h.mp = null } }
+    LaunchedEffect(tocando, pronto) {
+        val x = h.mp
+        if (x != null && pronto) runCatching { if (tocando) { if (!x.isPlaying) x.start() } else if (x.isPlaying) x.pause() }
+    }
+    AndroidView(
+        modifier = m.graphicsLayer { this.alpha = alpha },
+        factory = { c ->
+            TextureView(c).apply {
+                fun ajusta() {
+                    if (h.vw <= 0 || h.vh <= 0 || h.w <= 0 || h.h <= 0) return
+                    val s = maxOf(h.w / h.vw.toFloat(), h.h / h.vh.toFloat())
+                    val mt = android.graphics.Matrix()
+                    mt.setScale(h.vw * s / h.w, h.vh * s / h.h, h.w / 2f, h.h / 2f)
+                    setTransform(mt)
+                }
+                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, hh: Int) {
+                        h.w = w; h.h = hh
+                        val x = MediaPlayer(); h.mp = x
+                        try {
+                            x.setSurface(Surface(st))
+                            x.setDataSource(url)
+                            x.isLooping = true
+                            x.setVolume(0f, 0f)
+                            x.setOnVideoSizeChangedListener { _, vw, vh -> h.vw = vw; h.vh = vh; ajusta() }
+                            x.setOnPreparedListener { p -> if (h.mp === p) { pronto = true; if (tocandoAgora) p.start() } }
+                            x.setOnErrorListener { _, _, _ -> true }
+                            x.prepareAsync()
+                        } catch (e: Exception) { }
+                    }
+                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, hh: Int) { h.w = w; h.h = hh; ajusta() }
+                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean { runCatching { h.mp?.release() }; h.mp = null; return true }
+                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) { }
+                }
+            }
+        }
+    )
+}
+
 // Capa nítida + uma cópia DESFOCADA que invade a capa em degradê, sem nenhuma borda reta:
 //  - `invade`: quanto acima do fim da capa o blur começa a aparecer
 //  - `cheio`: daqui até o começo da dissolução o blur é 100% (fica atrás do título/ícones)
 //  - `funde`: nos últimos `funde` dp tudo se dissolve devagar no fundo desfocado da tela (que é a mesma capa)
-@Composable fun CapaBlur(u: String, escuro: Color, invade: Dp, cheio: Dp, funde: Dp, m: Modifier = Modifier.fillMaxSize()) {
+//  - `video`: capa animada (opcional); fica entre a capa nítida e o blur, então o degradê cobre o vídeo também
+@Composable fun CapaBlur(u: String, escuro: Color, invade: Dp, cheio: Dp, funde: Dp, m: Modifier = Modifier.fillMaxSize(), video: String = "", tocando: Boolean = false) {
     Box(m.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }.drawWithContent {
         drawContent()
         val f = funde.toPx()
@@ -741,6 +795,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
         drawRect(Brush.verticalGradient(0f to Color.Black, .3f to Color.Black.copy(alpha = .85f), .6f to Color.Black.copy(alpha = .45f), .85f to Color.Black.copy(alpha = .12f), 1f to Color.Transparent, startY = size.height - f, endY = size.height), blendMode = BlendMode.DstIn)
     }) {
         Img(hq(u), Modifier.fillMaxSize(), RoundedCornerShape(0.dp))
+        if (video.isNotBlank()) CapaVideo(video, tocando)
         Box(Modifier.fillMaxSize().graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }.drawWithContent {
             drawContent()
             val a = size.height - invade.toPx(); val b = size.height - cheio.toPx()
@@ -1221,10 +1276,10 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
             Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
                 if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
                 else Box(Modifier.fillMaxSize()) {
-                    // capa nítida em cima; o blur invade a capa e fica 100% atrás do nome da música, dissolvendo no fundo desfocado
-                    Crossfade(t.art, Modifier.fillMaxSize(), label = "cv") { u -> CapaBlur(u, escuro, invade = 340.dp, cheio = 160.dp, funde = 110.dp) }
+                    // capa nítida (ou capa animada, se o lançamento tiver) em cima; o blur invade a capa e fica 100% atrás do nome da música, dissolvendo no fundo desfocado
+                    Crossfade(t.art to t.video, Modifier.fillMaxSize(), label = "cv") { (u, v) -> CapaBlur(u, escuro, invade = 300.dp, cheio = 120.dp, funde = 110.dp, video = v, tocando = pl.playing) }
                     Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
-                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 46.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 10.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                         AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
                             Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
                         }

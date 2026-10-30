@@ -86,12 +86,13 @@ suspend fun releasesLoad(artistUid: String? = null, limit: Int = 30): List<Rel>?
         val cover = o.optString("cover_url")
         val titulo = o.optString("title")
         val data = o.optString("release_date")
+        val anim = js(o, "animated_cover_url")   // capa animada (vídeo), vazia quando o lançamento não tem
         val ta = o.optJSONArray("release_tracks") ?: JSONArray()
         val faixas = (0 until ta.length()).mapNotNull { ta.optJSONObject(it) }
             .sortedBy { it.optInt("track_number") }
             .map { x ->
                 Track(x.optString("title"), nome, cover, x.optString("audio_url"), titulo, p?.itunesId ?: 0L,
-                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0))
+                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0), anim)
             }
         if (faixas.isEmpty()) null   // lançamento ainda sem faixas (acabou de ser criado)
         else Rel(o.optString("id"), uid, nome, o.optString("type"), titulo, cover, data, o.optBoolean("explicit"), faixas)

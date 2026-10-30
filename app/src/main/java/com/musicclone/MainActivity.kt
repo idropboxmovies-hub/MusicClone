@@ -92,7 +92,7 @@ fun tempo(s: Float): String {
 }
 
 data class Album(val id: Long, val name: String, val artist: String, val art: String, val genre: String, val year: String, val artistId: Long = 0)
-data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val artistId: Long = 0, val year: String = "", val explicit: Boolean = false, val dur: Int = 0, val video: String = "")
+data class Track(val name: String, val artist: String, val art: String, val url: String, val album: String, val artistId: Long = 0, val year: String = "", val explicit: Boolean = false, val dur: Int = 0, val video: String = "", val letra: String = "")
 data class ArtistData(val photo: String?, val latest: Album?, val latestCount: Int, val latestDate: String, val top: List<Track>)
 data class Latest(val album: Album, val count: Int, val date: String)
 
@@ -980,8 +980,10 @@ class SyncStore(ctx: Context) {
     val key = remember(t) { norm(t.name) + "|" + norm(t.artist) }
     var lrc by remember(key) { mutableStateOf<Lrc?>(null) }
     var feito by remember(key) { mutableStateOf(false) }
-    var off by remember(key) { mutableStateOf(store.get(key)) }
-    LaunchedEffect(key) { lrc = lrcDe(t); feito = true }
+    // letra gerada no iStudio (já vem com os tempos certos do áudio completo): sem marcar e sem resincronizar
+    val propria = t.letra.isNotBlank()
+    var off by remember(key) { mutableStateOf(if (propria) 0L else store.get(key)) }
+    LaunchedEffect(key) { lrc = if (propria) Lrc(parseLrc(t.letra), emptyList()) else lrcDe(t); feito = true }
 
     val durMs = (pl.dur * 1000).toLong()
     val temSync = lrc?.synced?.isNotEmpty() == true
@@ -994,6 +996,7 @@ class SyncStore(ctx: Context) {
         when {
             l == null -> emptyList<Ly>()
             l.synced.isEmpty() -> l.plain.map { Ly(0L, it) }
+            propria -> l.synced
             o == null -> l.synced
             else -> l.synced.filter { it.ms >= o - 1500 && it.ms <= o + durMs + 500 }
         }
@@ -1058,7 +1061,7 @@ class SyncStore(ctx: Context) {
                 }
             }
         }
-        if (modoSync) Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.Center) {
+        if (modoSync && !propria) Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.Center) {
             Row(Modifier.clip(CircleShape).background(Color.White.copy(alpha = .18f)).clickable { store.clear(key); off = null }.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp), Color.White); T("  Trecho da prévia · Resincronizar", 12, 600, Color.White)
             }

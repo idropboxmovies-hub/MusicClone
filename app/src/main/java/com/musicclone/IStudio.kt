@@ -137,25 +137,33 @@ private suspend fun studioInsert(token: String, tabela: String, corpo: String) =
 }
 
 private suspend fun studioPublicar(
-    ctx: Context, token: String, userId: String, tipo: String, titulo: String, capa: Uri,
+    ctx: Context, token: String, userId: String, tipo: String, titulo: String, capa: Uri, capaAnim: Uri?,
     generos: List<String>, faixas: List<StudioTrack>, onProgress: (String, Float) -> Unit
 ) {
     val relId = UUID.randomUUID().toString()
-    val total = faixas.size + 2f
+    val extra = if (capaAnim != null) 1 else 0
+    val total = faixas.size + 2f + extra
     onProgress("Enviando a capa…", 0f)
     val capaUrl = studioUpload(ctx, token, "covers", "$userId/$relId/capa", capa, "jpg")
 
+    var animUrl: String? = null
+    if (capaAnim != null) {
+        onProgress("Enviando a capa animada…", 1 / total)
+        animUrl = studioUpload(ctx, token, "covers", "$userId/$relId/capa_animada", capaAnim, "mp4")
+    }
+
     val urls = ArrayList<String>()
     faixas.forEachIndexed { k, f ->
-        onProgress(if (faixas.size == 1) "Enviando o áudio…" else "Enviando faixa ${k + 1} de ${faixas.size}…", (k + 1) / total)
+        onProgress(if (faixas.size == 1) "Enviando o áudio…" else "Enviando faixa ${k + 1} de ${faixas.size}…", (k + 1 + extra) / total)
         urls.add(studioUpload(ctx, token, "audio", "$userId/$relId/faixa_${"%02d".format(k + 1)}", f.uri!!, "mp3"))
     }
 
-    onProgress("Publicando…", (faixas.size + 1) / total)
+    onProgress("Publicando…", (faixas.size + 1 + extra) / total)
     val rel = JSONObject()
         .put("id", relId).put("artist_id", userId).put("type", tipo).put("title", titulo)
         .put("cover_url", capaUrl).put("genres", JSONArray(generos))
         .put("explicit", faixas.any { it.explicito })
+    if (animUrl != null) rel.put("animated_cover_url", animUrl)   // só vai quando tem capa animada
     studioInsert(token, "releases", rel.toString())
 
     val arr = JSONArray()
@@ -171,12 +179,12 @@ private suspend fun studioPublicar(
 
 private fun studioIniciar(
     scope: CoroutineScope, ctx: Context, token: String?, userId: String?, tipo: String, titulo: String,
-    capa: Uri, generos: List<String>, faixas: List<StudioTrack>, st: StudioEstado
+    capa: Uri, capaAnim: Uri?, generos: List<String>, faixas: List<StudioTrack>, st: StudioEstado
 ) {
     if (token == null || userId == null) { st.erro = "Você precisa estar logado para publicar."; return }
     st.erro = null; st.enviando = true; st.prog = 0f
     scope.launch {
-        runCatching { studioPublicar(ctx, token, userId, tipo, titulo, capa, generos, faixas) { m, p -> st.msg = m; st.prog = p } }
+        runCatching { studioPublicar(ctx, token, userId, tipo, titulo, capa, capaAnim, generos, faixas) { m, p -> st.msg = m; st.prog = p } }
             .onSuccess { st.pronto = true }
             .onFailure { st.erro = it.message ?: "Algo deu errado" }
         st.enviando = false
@@ -314,6 +322,7 @@ private fun studioIniciar(
     val scope = rememberCoroutineScope()
     val st = remember { StudioEstado() }
     var capa by remember { mutableStateOf<Uri?>(null) }
+    var capaAnim by remember { mutableStateOf<Uri?>(null) }
     var titulo by remember { mutableStateOf("") }
     val generos = remember { mutableStateListOf<String>() }
     val faixa = remember { StudioTrack(0) }
@@ -345,6 +354,7 @@ private fun studioIniciar(
                             T(artistName, 13, 400, Sub, Modifier.padding(top = 10.dp, start = 4.dp))
                         }
                     }
+                    CampoCapaAnimada(capaAnim) { capaAnim = it }
                     T("Áudio", 18, 700, m = Modifier.padding(top = 24.dp, bottom = 10.dp))
                     StFaixaCard(faixa, null, false, { pickAudio.launch("audio/*") })
                     Spacer(Modifier.height(10.dp))
@@ -356,7 +366,7 @@ private fun studioIniciar(
         if (!st.enviando) StRodape {
             if (st.pronto) StBtn("Concluir", m = Modifier.weight(1f)) { voltar() }
             else StBtn(if (st.erro != null) "Tentar de novo" else "Publicar single", ok, m = Modifier.weight(1f)) {
-                studioIniciar(scope, ctx, token(), userId(), "single", titulo.trim(), capa!!, generos.toList(), listOf(faixa), st)
+                studioIniciar(scope, ctx, token(), userId(), "single", titulo.trim(), capa!!, capaAnim, generos.toList(), listOf(faixa), st)
             }
         }
     }
@@ -371,6 +381,7 @@ private fun studioIniciar(
     val st = remember { StudioEstado() }
     var passo by remember { mutableStateOf(0) }            // 0 capa · 1 nome · 2 gêneros · 3 faixas · 4 revisar
     var capa by remember { mutableStateOf<Uri?>(null) }
+    var capaAnim by remember { mutableStateOf<Uri?>(null) }
     var titulo by remember { mutableStateOf("") }
     val generos = remember { mutableStateListOf<String>() }
     var contador by remember { mutableStateOf(1) }
@@ -412,6 +423,7 @@ private fun studioIniciar(
                         }
                     }
                     if (capa != null) StBtn("Trocar imagem", cheio = false, m = Modifier.padding(top = 14.dp)) { pickCapa.launch("image/*") }
+                    CampoCapaAnimada(capaAnim) { capaAnim = it }
                 }
                 passo == 1 -> {
                     T("Nome do álbum", 26, 700, m = Modifier.padding(bottom = 18.dp))
@@ -437,6 +449,7 @@ private fun studioIniciar(
                         Column(Modifier.padding(start = 14.dp)) {
                             T(titulo, 20, 700, ml = 2); T(artistName, 14, 400, Sub)
                             T("Álbum · ${generos.joinToString(", ")}", 12, 400, Sub, ml = 2)
+                            if (capaAnim != null) T("Com capa animada", 12, 500, Red, Modifier.padding(top = 4.dp))
                         }
                     }
                     T("Faixas", 16, 700, m = Modifier.padding(top = 20.dp, bottom = 6.dp))
@@ -457,7 +470,7 @@ private fun studioIniciar(
                 st.pronto -> StBtn("Concluir", m = Modifier.weight(1f)) { voltar() }
                 passo < 4 -> StBtn("Continuar", podeAvancar, m = Modifier.weight(1f)) { passo++ }
                 else -> StBtn(if (st.erro != null) "Tentar de novo" else "Publicar álbum", m = Modifier.weight(1f)) {
-                    studioIniciar(scope, ctx, token(), userId(), "album", titulo.trim(), capa!!, generos.toList(), faixas.toList(), st)
+                    studioIniciar(scope, ctx, token(), userId(), "album", titulo.trim(), capa!!, capaAnim, generos.toList(), faixas.toList(), st)
                 }
             }
         }

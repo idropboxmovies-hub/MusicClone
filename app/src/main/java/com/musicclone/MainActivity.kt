@@ -4,7 +4,6 @@ package com.musicclone
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -13,8 +12,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.view.Surface
-import android.view.TextureView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -57,7 +54,6 @@ import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.drawable.toBitmap
 import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
@@ -732,55 +728,6 @@ typealias Sec = Map<String, List<Album>>
 
 // altura do degradê da capa do álbum: ela some atrás do título e termina exatamente nos botões (a partir dali é só o fundo desfocado)
 val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
-
-// Vídeo da capa animada: sem som, em loop, preenchendo a área (corta o excesso como ContentScale.Crop).
-// Pausa quando a música pausa e some (é descartado) quando a tela de letra abre.
-class VidHolder { var mp: MediaPlayer? = null; var vw = 0; var vh = 0; var w = 0; var h = 0 }
-
-@Composable fun CapaVideo(url: String, tocando: Boolean, m: Modifier = Modifier.fillMaxSize()) {
-    val h = remember(url) { VidHolder() }
-    var pronto by remember(url) { mutableStateOf(false) }
-    val tocandoAgora by rememberUpdatedState(tocando)
-    val alpha by animateFloatAsState(if (pronto) 1f else 0f, tween(500), label = "va")
-    DisposableEffect(url) { onDispose { runCatching { h.mp?.release() }; h.mp = null } }
-    LaunchedEffect(tocando, pronto) {
-        val x = h.mp
-        if (x != null && pronto) runCatching { if (tocando) { if (!x.isPlaying) x.start() } else if (x.isPlaying) x.pause() }
-    }
-    AndroidView(
-        modifier = m.graphicsLayer { this.alpha = alpha },
-        factory = { c ->
-            TextureView(c).apply {
-                fun ajusta() {
-                    if (h.vw <= 0 || h.vh <= 0 || h.w <= 0 || h.h <= 0) return
-                    val s = maxOf(h.w / h.vw.toFloat(), h.h / h.vh.toFloat())
-                    val mt = android.graphics.Matrix()
-                    mt.setScale(h.vw * s / h.w, h.vh * s / h.h, h.w / 2f, h.h / 2f)
-                    setTransform(mt)
-                }
-                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, hh: Int) {
-                        h.w = w; h.h = hh
-                        val x = MediaPlayer(); h.mp = x
-                        try {
-                            x.setSurface(Surface(st))
-                            x.setDataSource(url)
-                            x.isLooping = true
-                            x.setVolume(0f, 0f)
-                            x.setOnVideoSizeChangedListener { _, vw, vh -> h.vw = vw; h.vh = vh; ajusta() }
-                            x.setOnPreparedListener { p -> if (h.mp === p) { pronto = true; if (tocandoAgora) p.start() } }
-                            x.setOnErrorListener { _, _, _ -> true }
-                            x.prepareAsync()
-                        } catch (e: Exception) { }
-                    }
-                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, hh: Int) { h.w = w; h.h = hh; ajusta() }
-                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean { runCatching { h.mp?.release() }; h.mp = null; return true }
-                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) { }
-                }
-            }
-        }
-    )
-}
 
 // Capa nítida + uma cópia DESFOCADA que invade a capa em degradê, sem nenhuma borda reta:
 //  - `invade`: quanto acima do fim da capa o blur começa a aparecer

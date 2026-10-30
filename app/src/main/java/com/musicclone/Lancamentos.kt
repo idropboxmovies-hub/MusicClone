@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -81,6 +82,7 @@ suspend fun releasesLoad(artistUid: String? = null, limit: Int = 30): List<Rel>?
     }
     return rows.mapNotNull { o ->
         val uid = o.optString("artist_id")
+        val relId = o.optString("id")
         val p = profs[uid]
         val nome = p?.name ?: "Artista"
         val cover = o.optString("cover_url")
@@ -92,10 +94,11 @@ suspend fun releasesLoad(artistUid: String? = null, limit: Int = 30): List<Rel>?
             .sortedBy { it.optInt("track_number") }
             .map { x ->
                 Track(x.optString("title"), nome, cover, x.optString("audio_url"), titulo, p?.itunesId ?: 0L,
-                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0), anim, js(x, "lyrics_lrc"))
+                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0), anim, js(x, "lyrics_lrc"),
+                    x.optString("id"), relId, uid)
             }
         if (faixas.isEmpty()) null   // lançamento ainda sem faixas (acabou de ser criado)
-        else Rel(o.optString("id"), uid, nome, o.optString("type"), titulo, cover, data, o.optBoolean("explicit"), faixas)
+        else Rel(relId, uid, nome, o.optString("type"), titulo, cover, data, o.optBoolean("explicit"), faixas)
     }
 }
 
@@ -118,21 +121,28 @@ suspend fun claimedByItunes(ids: List<Long>): Map<Long, Prof> {
 
 @Composable fun RelS(r: Rel, pl: Pl, back: () -> Unit) {
     val (c1, _) = rememberPal(r.cover)
+    var faixas by remember(r.id) { mutableStateOf(r.tracks) }   // some da lista quando o dono exclui a música
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, lerp(c1, Color.Black, .55f), Color.Black)))) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 22.dp).padding(bottom = 200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Img(r.cover, Modifier.padding(top = 56.dp).enter(0).size(250.dp).shadow(28.dp, RoundedCornerShape(10.dp)))
             T(r.title, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
             T(r.artistName, 19, 600, lerp(c1, Color.White, .55f))
             T("${r.label} · ${r.date.take(4)}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
-            Row(Modifier.padding(vertical = 18.dp).tap { pl.play(r.tracks, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(vertical = 18.dp).tap { if (faixas.isNotEmpty()) pl.play(faixas, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
             }
-            r.tracks.forEachIndexed { k, t ->
-                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(r.tracks, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+            faixas.forEachIndexed { k, t ->
+                Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(faixas, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                     T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp))
                     Column(Modifier.weight(1f)) { T(t.name, 16, 500, Color.White) }
                     if (t.explicit) Box(Modifier.padding(end = 10.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = .3f)).padding(horizontal = 4.dp)) { T("E", 10, 700, Color.White) }
                     if (t.dur > 0) T(fmt(t.dur), 13, 400, Color.White.copy(alpha = .6f))
+                    // 3 pontinhos: o dono da música consegue excluir
+                    MenuFaixa(t, { x ->
+                        faixas = faixas.filter { it.tid != x.tid }
+                        pl.remover(chaveDe(x))
+                        if (faixas.isEmpty()) back()
+                    }) { Icon(Icons.Rounded.MoreHoriz, null, tint = Color.White.copy(alpha = .7f)) }
                 }
                 HorizontalDivider(color = Color.White.copy(alpha = .15f))
             }

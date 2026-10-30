@@ -92,7 +92,7 @@ suspend fun releasesLoad(artistUid: String? = null, limit: Int = 30): List<Rel>?
             .sortedBy { it.optInt("track_number") }
             .map { x ->
                 Track(x.optString("title"), nome, cover, x.optString("audio_url"), titulo, p?.itunesId ?: 0L,
-                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0), anim)
+                    data.take(4), x.optBoolean("explicit", false), x.optInt("duration_sec", 0), anim, js(x, "lyrics_lrc"))
             }
         if (faixas.isEmpty()) null   // lançamento ainda sem faixas (acabou de ser criado)
         else Rel(o.optString("id"), uid, nome, o.optString("type"), titulo, cover, data, o.optBoolean("explicit"), faixas)

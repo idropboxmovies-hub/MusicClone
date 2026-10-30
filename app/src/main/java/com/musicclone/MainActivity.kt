@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -108,6 +109,10 @@ sealed class Page {
     object IStudio : Page()
     object Estat : Page()
     data class Lan(val r: Rel) : Page()
+    // NOVO: shows e turnês
+    data class ShowsList(val uid: String, val nome: String, val foto: String?) : Page()
+    data class ShowDet(val s: Show) : Page()
+    object ShowsEdit : Page()
 }
 data class Nav(val tab: Int, val page: Page?, val depth: Int)
 
@@ -783,7 +788,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
 }
 
 @Composable fun AlbumS(al: Album, pl: Pl, back: () -> Unit) {
-    val ctx = LocalContext.current
+    val share = LocalShare.current
     val (c1, _) = rememberPal(al.art); var tr by remember { mutableStateOf(listOf<Track>()) }
     LaunchedEffect(al.id) { tr = tracks(al) }
     val escuro = lerp(c1, Color.Black, .6f)
@@ -816,7 +821,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Glass(Icons.Filled.ArrowBackIosNew) { back() }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${al.name} de ${al.artist} no beats") }, null)) }
+                Glass(Icons.Filled.Share) { share(shareAlbum(al)) }
                 Glass(Icons.Rounded.MoreHoriz) { }
             }
         }
@@ -875,9 +880,11 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
 }
 
 // Perfil do artista (estilo Apple Music): foto de fundo + blur em degradê atrás dos botões
-@Composable fun ArtistS(p: Page.Art, pl: Pl, open: (Album) -> Unit, mine: Boolean = false, edit: () -> Unit = {}, stats: () -> Unit = {}, back: () -> Unit) {
+@Composable fun ArtistS(p: Page.Art, pl: Pl, open: (Album) -> Unit, mine: Boolean = false, edit: () -> Unit = {}, stats: () -> Unit = {}, shows: () -> Unit = {}, back: () -> Unit) {
     val ctx = LocalContext.current
     val auth = LocalAuth.current
+    val share = LocalShare.current
+    val abrirShows = LocalShows.current
     var d by remember(p) { mutableStateOf<ArtistData?>(null) }
     var claimedProf by remember(p) { mutableStateOf<Prof?>(null) }
     var menuTopo by remember { mutableStateOf(false) }
@@ -930,11 +937,18 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
                 Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .55f to Color.Transparent, .8f to top.copy(alpha = .6f), 1f to top)))
                 Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp).padding(bottom = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .28f)).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // "Próximos Shows": toque abre a lista de shows e turnês que o artista cadastrou
+                    Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .28f)).clickable {
+                        if (relUid != null) abrirShows(relUid, p.name, photo)
+                        else Toast.makeText(ctx, "Este artista ainda não cadastrou shows", Toast.LENGTH_SHORT).show()
+                    }.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.CalendarToday, null, Modifier.size(12.dp), Color.White); T("  Próximos Shows", 11, 600, Color.White)
                     }
                     T(p.name, 36, 700, Color.White, Modifier.padding(top = 8.dp), 2, TextAlign.Center)
-                    if (mine) Pilula("Editar perfil", Modifier.padding(top = 14.dp), icon = Icons.Filled.Edit, on = edit)
+                    if (mine) Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Pilula("Editar perfil", Modifier, icon = Icons.Filled.Edit, on = edit)
+                        Pilula("Shows", Modifier, icon = Icons.Filled.Event, on = shows)
+                    }
                     else Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
                         Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { IcPlay(36.dp, Color.Black) }
@@ -986,7 +1000,8 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Glass(Icons.Filled.ArrowBackIosNew) { back() }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Glass(Icons.Filled.Share) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Ouça ${p.name} no beats") }, null)) }
+                // compartilhar perfil: abre o menu (story, copiar link, mais opções)
+                Glass(Icons.Filled.Share) { share(shareArtist(p.name, relUid, photo)) }
                 // 3 pontinhos do topo: no perfil do próprio artista abre o menu suspenso com "Estatísticas"
                 Box {
                     Glass(Icons.Rounded.MoreHoriz) { if (mine) menuTopo = true }
@@ -995,6 +1010,11 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
                             text = { Text("Estatísticas", color = Color.White) },
                             leadingIcon = { Icon(Icons.Filled.BarChart, null, tint = Color.White) },
                             onClick = { menuTopo = false; stats() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Shows e turnês", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Filled.Event, null, tint = Color.White) },
+                            onClick = { menuTopo = false; shows() }
                         )
                     }
                 }
@@ -1263,6 +1283,7 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
 
 @Composable fun Now(pl: Pl, ui: LyUi, close: () -> Unit) {
     val t = pl.cur ?: return
+    val share = LocalShare.current
     val (c1, _) = rememberPal(t.art)
     val tint = lerp(c1, Color.White, .6f)
     val escuro = lerp(c1, Color.Black, .6f)
@@ -1287,7 +1308,10 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
                         AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
                             Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
                         }
-                        Spacer(Modifier.width(12.dp)); NowBtn(Icons.Rounded.StarBorder); Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.width(12.dp))
+                        // compartilhar a música (story do Instagram, copiar link, mais opções)
+                        Box(Modifier.clip(CircleShape).clickable { share(shareTrack(t)) }) { NowBtn(Icons.Filled.Share) }
+                        Spacer(Modifier.width(10.dp)); NowBtn(Icons.Rounded.StarBorder); Spacer(Modifier.width(10.dp))
                         // 3 pontinhos: o dono da música toca aqui para excluir
                         MenuFaixa(t, { x -> pl.remover(chaveDe(x)) }, 0.dp) { NowBtn(Icons.Rounded.MoreHoriz) }
                     }
@@ -1349,6 +1373,8 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     var claimed by remember { mutableStateOf(mapOf<Long, Prof>()) }
     LaunchedEffect(auth.prof) { claimed = claimedByItunes(FEAT.map { it.first }) }
     val featShown = feat.map { f -> claimed[f.id]?.photo?.let { f.copy(photo = it) } ?: f }
+    // menu de compartilhar (story do Instagram / copiar link / mais opções)
+    var shareData by remember { mutableStateOf<ShareData?>(null) }
     BackHandler(np || stack.isNotEmpty()) { if (np) np = false else stack.removeAt(stack.lastIndex) }
     val open: (Album) -> Unit = { stack.add(Page.Alb(it)) }
     val mix: (List<Album>) -> Unit = { l -> scope.launch { val t = l.shuffled().take(3).flatMap { tracks(it) }.shuffled(); if (t.isNotEmpty()) pl.play(t, 0) } }
@@ -1364,6 +1390,8 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     val openBeats: () -> Unit = { if (stack.lastOrNull() !is Page.Beats) stack.add(Page.Beats) }
     val openMe: () -> Unit = { np = false; if (stack.lastOrNull() !is Page.Me) stack.add(Page.Me) }
     val openApp: (Prof) -> Unit = { p -> np = false; stack.add(Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured, p.id)) }
+    val openShows: (String, String, String?) -> Unit = { uid, nome, foto -> np = false; stack.add(Page.ShowsList(uid, nome, foto)) }
+    val openShowsEdit: () -> Unit = { if (stack.lastOrNull() !is Page.ShowsEdit) stack.add(Page.ShowsEdit) }
     val sub = { stack.isNotEmpty() }
 
     // barra de navegação: tocando música, ela encolhe (ícone da aba + mini-player + busca) e fica na cor da capa em versão escura
@@ -1374,7 +1402,13 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     val compact = pl.cur != null && !navOpen
     LaunchedEffect(pl.cur == null) { if (pl.cur == null) navOpen = false }
 
-    CompositionLocalProvider(LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe, LocalRel provides { r: Rel -> np = false; stack.add(Page.Lan(r)) }) {
+    CompositionLocalProvider(
+        LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe,
+        LocalRel provides { r: Rel -> np = false; stack.add(Page.Lan(r)) },
+        LocalShare provides { d: ShareData -> shareData = d },
+        LocalShows provides openShows,
+        LocalShowsEdit provides openShowsEdit
+    ) {
         Box(Modifier.fillMaxSize().background(bgc)) {
             AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
                 val push = targetState.depth > initialState.depth; val pop = targetState.depth < initialState.depth
@@ -1390,7 +1424,7 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
                         Page.Me -> {
                             val pr = auth.prof
                             // artista: a mesma tela de perfil de artista, mas editável; ouvinte: tela da conta
-                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured, pr.id), pl, open, true, { stack.add(Page.Edit) }, { stack.add(Page.Estat) }) { back() }
+                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured, pr.id), pl, open, true, { stack.add(Page.Edit) }, { stack.add(Page.Estat) }, openShowsEdit) { back() }
                             else AccountS(auth) { back() }
                         }
                         Page.Edit -> EditarS(auth, { stack.add(Page.IStudio) }) { back() }
@@ -1401,6 +1435,9 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
                         ) { back() }
                         Page.Estat -> EstatisticasS(auth) { back() }
                         is Page.Lan -> RelS(pg.r, pl) { back() }
+                        is Page.ShowsList -> ShowsS(pg.uid, pg.nome, pg.foto, { s -> stack.add(Page.ShowDet(s)) }) { back() }
+                        is Page.ShowDet -> ShowDetalheS(pg.s) { back() }
+                        Page.ShowsEdit -> ShowsEditS(auth) { back() }
                         Page.Rep -> Replay(stats) { back() }
                         is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
                         Page.Beats -> BeatsS(openPl) { back() }
@@ -1444,6 +1481,8 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
                 }
             }
             AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) { Now(pl, ly) { np = false } }
+            // menu de compartilhar fica por cima de tudo
+            ShareSheet(shareData) { shareData = null }
         }
     }
 }

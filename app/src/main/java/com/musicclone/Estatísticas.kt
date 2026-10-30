@@ -60,6 +60,10 @@ suspend fun supaReq(metodo: String, caminho: String, token: String?, corpo: Stri
     } finally { c.disconnect() }
 }
 
+// o Supabase devolve erros como {"message": "..."}; mostra só a mensagem quando der
+private fun msgErro(corpo: String): String =
+    runCatching { JSONObject(corpo).optString("message") }.getOrDefault("").ifBlank { corpo.take(200) }
+
 // =====================================================================
 // Músicas do iTunes que o artista dono excluiu: somem da plataforma para todo mundo
 // =====================================================================
@@ -92,18 +96,23 @@ suspend fun semOcultas(l: List<Track>): List<Track> {
 
 // =====================================================================
 // Streams reais (uma reprodução conta depois de 30 s ouvidos, como no Spotify)
+// O app não grava mais direto na tabela: chama a função register_stream do Supabase.
+//  - música do iStudio: só manda o id da faixa; o servidor busca nome, artista e capa no banco
+//  - música do iTunes: manda os dados da faixa (o servidor não consegue confirmar esses)
+// O servidor também recusa mais de 1 stream a cada 25 s por conta (devolve false, sem erro).
 // =====================================================================
 suspend fun registrarStream(t: Track) {
     val tok = Sess.tok() ?: return
-    val cr = creditos(t.artist, t.name).map { norm(it) }.filter { it.isNotEmpty() }.distinct()
     val o = JSONObject()
-        .put("track_key", chaveDe(t)).put("track_name", t.name).put("artist", t.artist).put("art", t.art)
-        .put("credits", JSONArray(cr))
     if (t.tid.isNotEmpty()) {
-        o.put("release_track_id", t.tid)
-        if (t.uid.isNotEmpty()) o.put("artist_uid", t.uid)
-    } else if (t.artistId != 0L) o.put("itunes_artist_id", t.artistId)
-    runCatching { supaReq("POST", "/rest/v1/streams", tok, o.toString(), "return=minimal") }
+        o.put("p_tid", t.tid)
+    } else {
+        val cr = creditos(t.artist, t.name).filter { it.isNotBlank() }.distinct()   // nomes crus; o servidor normaliza
+        o.put("p_name", t.name).put("p_artist", t.artist).put("p_art", t.art)
+            .put("p_credits", JSONArray(cr))
+        if (t.artistId != 0L) o.put("p_itunes", t.artistId)
+    }
+    runCatching { supaReq("POST", "/rest/v1/rpc/register_stream", tok, o.toString()) }
         .onSuccess { if (!it.ok) Log.w("STREAM", "HTTP ${it.code}: ${it.corpo}") }
         .onFailure { Log.w("STREAM", "falhou: ${it.message}") }
 }
@@ -125,9 +134,9 @@ private fun caminhoStorage(url: String, bucket: String): String? =
 suspend fun apagarFaixa(token: String, t: Track, meuItunes: Long) {
     if (t.tid.isNotEmpty()) {
         val r = supaReq("DELETE", "/rest/v1/release_tracks?id=eq.${t.tid}", token, null, "return=representation")
-        if (!r.ok) error("Não deu para excluir (${r.code}): ${r.corpo}")
+        if (!r.ok) error("Não deu para excluir (${r.code}): ${msgErro(r.corpo)}")
         val n = runCatching { JSONArray(r.corpo).length() }.getOrDefault(0)
-        if (n == 0) error("Sem permissão para excluir. Rode o arquivo stats_supabase.sql no Supabase.")
+        if (n == 0) error("Sem permissão para excluir essa música.")
         caminhoStorage(t.url, "audio")?.let { runCatching { supaReq("DELETE", "/storage/v1/object/audio/$it", token) } }
         // se não sobrou nenhuma faixa no lançamento, apaga o lançamento (e a capa)
         val resto = supaReq("GET", "/rest/v1/release_tracks?release_id=eq.${t.rid}&select=id&limit=1", token)
@@ -140,7 +149,7 @@ suspend fun apagarFaixa(token: String, t: Track, meuItunes: Long) {
         if (meuItunes == 0L || t.artistId != meuItunes) error("Só o artista dono dessa música pode excluí-la.")
         val o = JSONObject().put("track_key", chaveDe(t)).put("track_name", t.name).put("artist", t.artist).put("itunes_artist_id", t.artistId)
         val r = supaReq("POST", "/rest/v1/hidden_tracks?on_conflict=track_key", token, o.toString(), "resolution=ignore-duplicates,return=minimal")
-        if (!r.ok) error("Não deu para excluir (${r.code}): ${r.corpo}")
+        if (!r.ok) error("Não deu para excluir (${r.code}): ${msgErro(r.corpo)}")
         Oculto.add(chaveDe(t))
     }
 }
@@ -204,12 +213,12 @@ class FaixaEst(val nome: String, val artista: String, val capa: String, val tota
 class EstData(val ouvintes: Int, val total: Int, val mes: Int, val faixas: List<FaixaEst>)
 class Posicao(val playlist: PlDef, val pos: Int, val nome: String, val capa: String)
 
-suspend fun estLoad(token: String, uid: String, itunes: Long, nome: String): EstData {
-    val corpo = JSONObject().put("p_uid", uid).put("p_itunes", itunes).put("p_norm", norm(nome)).toString()
-    val r = supaReq("POST", "/rest/v1/rpc/artist_stats", token, corpo)
+// artist_stats não recebe parâmetro: o servidor descobre quem é pelo token
+suspend fun estLoad(token: String): EstData {
+    val r = supaReq("POST", "/rest/v1/rpc/artist_stats", token, "{}")
     if (!r.ok) {
         val dica = if (r.code == 404) " (rode o arquivo stats_supabase.sql no Supabase)" else ""
-        error("Erro ${r.code}$dica: ${r.corpo.take(200)}")
+        error("Erro ${r.code}$dica: ${msgErro(r.corpo)}")
     }
     val j = JSONObject(r.corpo)
     val fa = j.optJSONArray("faixas") ?: JSONArray()
@@ -249,9 +258,9 @@ private fun dinheiro(v: Double) = if (v < 1.0) String.format(ptBR, "US$ %.4f", v
     var tentativa by remember { mutableStateOf(0) }
     LaunchedEffect(tentativa) {
         erro = null; dados = null
-        val tok = auth.jwt; val uid = auth.uid
-        if (tok == null || uid == null || pr == null) { erro = "Você precisa estar logado como artista."; return@LaunchedEffect }
-        runCatching { estLoad(tok, uid, pr.itunesId, pr.name) }.onSuccess { dados = it }.onFailure { erro = it.message ?: "Algo deu errado" }
+        val tok = auth.jwt
+        if (tok == null || pr == null) { erro = "Você precisa estar logado como artista."; return@LaunchedEffect }
+        runCatching { estLoad(tok) }.onSuccess { dados = it }.onFailure { erro = it.message ?: "Algo deu errado" }
     }
     LaunchedEffect(tentativa) {
         pos = null

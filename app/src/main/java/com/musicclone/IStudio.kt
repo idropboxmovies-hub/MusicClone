@@ -64,6 +64,7 @@ class StudioTrack(val key: Int) {
     var titulo by mutableStateOf("")
     var dur by mutableStateOf(0)
     var explicito by mutableStateOf(false)
+    var sincronizar by mutableStateOf(false)   // pede ao Gemini a letra com os tempos
 }
 
 class StudioEstado {
@@ -71,6 +72,7 @@ class StudioEstado {
     var msg by mutableStateOf("")
     var prog by mutableStateOf(0f)
     var erro by mutableStateOf<String?>(null)
+    var aviso by mutableStateOf("")
     var pronto by mutableStateOf(false)
 }
 
@@ -136,10 +138,11 @@ private suspend fun studioInsert(token: String, tabela: String, corpo: String) =
     } finally { c.disconnect() }
 }
 
+// devolve quantas faixas pediram letra sincronizada e não conseguiram (o lançamento é publicado mesmo assim)
 private suspend fun studioPublicar(
     ctx: Context, token: String, userId: String, tipo: String, titulo: String, capa: Uri, capaAnim: Uri?,
     generos: List<String>, faixas: List<StudioTrack>, onProgress: (String, Float) -> Unit
-) {
+): Int {
     val relId = UUID.randomUUID().toString()
     val extra = if (capaAnim != null) 1 else 0
     val total = faixas.size + 2f + extra
@@ -153,9 +156,17 @@ private suspend fun studioPublicar(
     }
 
     val urls = ArrayList<String>()
+    val letras = arrayOfNulls<String>(faixas.size)
+    var falhas = 0
     faixas.forEachIndexed { k, f ->
-        onProgress(if (faixas.size == 1) "Enviando o áudio…" else "Enviando faixa ${k + 1} de ${faixas.size}…", (k + 1 + extra) / total)
+        val prog = (k + 1 + extra) / total
+        onProgress(if (faixas.size == 1) "Enviando o áudio…" else "Enviando faixa ${k + 1} de ${faixas.size}…", prog)
         urls.add(studioUpload(ctx, token, "audio", "$userId/$relId/faixa_${"%02d".format(k + 1)}", f.uri!!, "mp3"))
+        if (f.sincronizar) {
+            onProgress(if (faixas.size == 1) "Sincronizando a letra com IA…" else "Sincronizando a letra da faixa ${k + 1} com IA…", prog)
+            val l = geminiLetraSync(ctx, f.uri!!)
+            if (l != null) letras[k] = l else falhas++
+        }
     }
 
     onProgress("Publicando…", (faixas.size + 1 + extra) / total)
@@ -168,13 +179,16 @@ private suspend fun studioPublicar(
 
     val arr = JSONArray()
     faixas.forEachIndexed { k, f ->
-        arr.put(JSONObject()
+        val o = JSONObject()
             .put("release_id", relId).put("track_number", k + 1)
             .put("title", if (tipo == "single") titulo else f.titulo.trim())
-            .put("audio_url", urls[k]).put("duration_sec", f.dur).put("explicit", f.explicito))
+            .put("audio_url", urls[k]).put("duration_sec", f.dur).put("explicit", f.explicito)
+        letras[k]?.let { o.put("lyrics_lrc", it) }   // só vai quando a IA devolveu a letra com tempos
+        arr.put(o)
     }
     studioInsert(token, "release_tracks", arr.toString())
     onProgress("Pronto!", 1f)
+    return falhas
 }
 
 private fun studioIniciar(
@@ -182,10 +196,13 @@ private fun studioIniciar(
     capa: Uri, capaAnim: Uri?, generos: List<String>, faixas: List<StudioTrack>, st: StudioEstado
 ) {
     if (token == null || userId == null) { st.erro = "Você precisa estar logado para publicar."; return }
-    st.erro = null; st.enviando = true; st.prog = 0f
+    st.erro = null; st.aviso = ""; st.enviando = true; st.prog = 0f
     scope.launch {
         runCatching { studioPublicar(ctx, token, userId, tipo, titulo, capa, capaAnim, generos, faixas) { m, p -> st.msg = m; st.prog = p } }
-            .onSuccess { st.pronto = true }
+            .onSuccess { falhas ->
+                st.pronto = true
+                if (falhas > 0) st.aviso = "A letra sincronizada não pôde ser gerada em $falhas ${if (falhas == 1) "faixa" else "faixas"} (arquivo muito grande ou erro da IA). O lançamento foi publicado normalmente."
+            }
             .onFailure { st.erro = it.message ?: "Algo deu errado" }
         st.enviando = false
     }
@@ -257,11 +274,12 @@ private fun studioIniciar(
     }
 }
 
-@Composable private fun StSucesso(titulo: String) {
+@Composable private fun StSucesso(titulo: String, aviso: String = "") {
     Column(Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Filled.CheckCircle, null, Modifier.size(80.dp), Red)
         T("Lançamento publicado!", 24, 700, m = Modifier.padding(top = 16.dp), a = TextAlign.Center, ml = 2)
         T("\"$titulo\" já está no ar para os seus ouvintes.", 15, 400, Sub, Modifier.padding(top = 8.dp), 3, TextAlign.Center)
+        if (aviso.isNotEmpty()) T(aviso, 13, 500, Red, Modifier.padding(top = 16.dp), 6, TextAlign.Center)
     }
 }
 
@@ -286,6 +304,13 @@ private fun studioIniciar(
         Row(Modifier.padding(top = 10.dp).clickable { f.explicito = !f.explicito }, verticalAlignment = Alignment.CenterVertically) {
             Icon(if (f.explicito) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank, null, Modifier.size(22.dp), if (f.explicito) Red else Sub)
             T("  Conteúdo explícito", 13, 400, Sub)
+        }
+        Row(Modifier.padding(top = 10.dp).clickable { f.sincronizar = !f.sincronizar }, verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (f.sincronizar) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank, null, Modifier.size(22.dp), if (f.sincronizar) Red else Sub)
+            Column(Modifier.padding(start = 8.dp)) {
+                T("Letra sincronizada automática (IA)", 13, 500, if (f.sincronizar) LocalContentColor.current else Sub)
+                if (f.sincronizar) T("O áudio é enviado ao Gemini para criar a letra com os tempos. Demora um pouco a mais para publicar.", 11, 400, Sub, Modifier.padding(top = 2.dp), 3)
+            }
         }
     }
 }
@@ -339,7 +364,7 @@ private fun studioIniciar(
         StTopo("Novo single", ativo = !st.enviando, voltar = voltar)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
             when {
-                st.pronto -> StSucesso(titulo)
+                st.pronto -> StSucesso(titulo, st.aviso)
                 st.enviando -> StEnviando(st)
                 else -> {
                     Row(verticalAlignment = Alignment.Top) {
@@ -411,7 +436,7 @@ private fun studioIniciar(
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp)) {
             when {
-                st.pronto -> StSucesso(titulo)
+                st.pronto -> StSucesso(titulo, st.aviso)
                 st.enviando -> StEnviando(st)
                 passo == 0 -> {
                     T("Capa do álbum", 26, 700, m = Modifier.padding(bottom = 6.dp))
@@ -457,6 +482,7 @@ private fun studioIniciar(
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                             T("${k + 1}", 14, 600, Sub, Modifier.width(26.dp))
                             T(f.titulo, 15, 500, m = Modifier.weight(1f))
+                            if (f.sincronizar) T("Letra IA  ", 12, 500, Red)
                             if (f.dur > 0) T(fmt(f.dur), 13, 400, Sub)
                         }
                     }

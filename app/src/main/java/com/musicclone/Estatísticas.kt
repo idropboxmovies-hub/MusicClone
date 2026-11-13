@@ -11,6 +11,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -154,10 +157,12 @@ suspend fun apagarFaixa(token: String, t: Track, meuItunes: Long) {
     }
 }
 
-// os 3 pontinhos de uma música: só abre o menu "Excluir música" se quem está logado é o dono dela
+// os 3 pontinhos de uma música: abre o menu suspenso em Liquid Glass com refração e dim em tempo real
 @Composable fun MenuFaixa(t: Track, aoApagar: (Track) -> Unit, pad: Dp = 4.dp, conteudo: @Composable () -> Unit) {
     val auth = LocalAuth.current
     val ctx = LocalContext.current
+    val share = LocalShare.current
+    val goArtist = LocalArtist.current
     val scope = rememberCoroutineScope()
     val dono = podeExcluir(t, auth)
     var menu by remember { mutableStateOf(false) }
@@ -165,13 +170,26 @@ suspend fun apagarFaixa(token: String, t: Track, meuItunes: Long) {
     var apagando by remember { mutableStateOf(false) }
     val vermelho = Color(0xFFFF453A)
     Box {
-        Box(Modifier.clip(CircleShape).then(if (dono) Modifier.clickable { menu = true } else Modifier).padding(pad), Alignment.Center) { conteudo() }
-        DropdownMenu(menu, { menu = false }, Modifier.background(Color(0xFF2C2C2E))) {
-            DropdownMenuItem(
-                text = { Text("Excluir música", color = vermelho) },
-                leadingIcon = { Icon(Icons.Filled.Delete, null, tint = vermelho) },
-                onClick = { menu = false; confirma = true }
-            )
+        Box(Modifier.clip(CircleShape).clickable { menu = true }.padding(pad), Alignment.Center) { conteudo() }
+        LiquidDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            LiquidDropdownItem("Compartilhar música", Icons.Filled.Share) {
+                menu = false
+                share(shareTrack(t))
+            }
+            LiquidDropdownItem("Copiar link da música", Icons.Filled.Link) {
+                menu = false
+                copiarLink(ctx, shareTrack(t))
+            }
+            LiquidDropdownItem("Ir para Artista", Icons.Filled.Person, showDivider = dono) {
+                menu = false
+                goArtist(t.artist, t.artistId, t.art)
+            }
+            if (dono) {
+                LiquidDropdownItem("Excluir música", Icons.Filled.Delete, color = vermelho, showDivider = false) {
+                    menu = false
+                    confirma = true
+                }
+            }
         }
     }
     if (confirma) AlertDialog(
@@ -269,7 +287,7 @@ private fun dinheiro(v: Double) = if (v < 1.0) String.format(ptBR, "US$ %.4f", v
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable { back() }, Alignment.Center) { Icon(Icons.Filled.ArrowBackIosNew, null, Modifier.size(20.dp), Red) }
+            Glass(Icons.Filled.ArrowBackIosNew) { back() }
             T("Estatísticas", 24, 700, m = Modifier.padding(start = 4.dp))
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = 200.dp)) {

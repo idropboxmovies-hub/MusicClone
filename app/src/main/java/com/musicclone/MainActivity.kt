@@ -1177,7 +1177,7 @@ suspend fun resolverLink(raw: String): LinkHit? {
             }
         }
     }
-    IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Red) }
+    Box(Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { back() } }
 }
 
 // altura do degradê da capa do álbum: ela some atrás do título e termina exatamente nos botões (a partir dali é só o fundo desfocado)
@@ -1251,7 +1251,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
 }
 
 @Composable fun Glass(i: ImageVector, f: () -> Unit) =
-    Box(Modifier.size(38.dp).clip(CircleShape).background(Color.Black.copy(alpha = .3f)).pointerInput(Unit) { detectTapGestures { f() } }, Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
+    LiquidGlassCircle(size = 40.dp, onClick = f, tint = Color.White.copy(alpha = .10f), dim = .18f) { Icon(i, null, Modifier.size(18.dp), Color.White) }
 
 @Composable fun PlaylistS(pd: PlDef, pl: Pl, openBeats: () -> Unit, back: () -> Unit) {
     var tr by remember { mutableStateOf(listOf<Track>()) }; var loaded by remember { mutableStateOf(false) }
@@ -1276,7 +1276,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
                 HorizontalDivider(color = Color.White.copy(alpha = .15f))
             }
         }
-        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
+        Box(Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { back() } }
     }
 }
 
@@ -1553,10 +1553,15 @@ suspend fun rememberGoogleDisplayFont(ctx: Context, artistName: String): FontFam
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .55f to Color.Transparent, .8f to top.copy(alpha = .6f), 1f to top)))
                 Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp).padding(bottom = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     // "Próximos Shows": toque abre a lista de shows e turnês que o artista cadastrou
-                    Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = .28f)).clickable {
-                        if (relUid != null) abrirShows(relUid, p.name, photo)
-                        else Toast.makeText(ctx, "Este artista ainda não cadastrou shows", Toast.LENGTH_SHORT).show()
-                    }.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LiquidGlassPill(
+                        onClick = {
+                            if (relUid != null) abrirShows(relUid, p.name, photo)
+                            else Toast.makeText(ctx, "Este artista ainda não cadastrou shows", Toast.LENGTH_SHORT).show()
+                        },
+                        height = 30.dp,
+                        horizontalPadding = 12.dp,
+                        dim = 0.22f
+                    ) {
                         Icon(Icons.Filled.CalendarToday, null, Modifier.size(12.dp), Color.White); T("  Próximos Shows", 11, 600, Color.White)
                     }
                     LogoArtista(p.name, photo, p.app && p.id == 0L, Modifier.padding(top = 8.dp))
@@ -1564,10 +1569,33 @@ suspend fun rememberGoogleDisplayFont(ctx: Context, artistName: String): FontFam
                         Pilula("Editar perfil", Modifier, icon = Icons.Filled.Edit, on = edit)
                         Pilula("Shows", Modifier, icon = Icons.Filled.Event, on = shows)
                     }
-                    else Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Info, null, Modifier.size(24.dp), Color.White.copy(alpha = .85f)); Spacer(Modifier.width(30.dp))
-                        Box(Modifier.size(66.dp).tap { if (songs.isNotEmpty()) pl.play(songs, 0) }.clip(CircleShape).background(Color.White), Alignment.Center) { IcPlay(36.dp, Color.Black) }
-                        Spacer(Modifier.width(30.dp)); Icon(Icons.Rounded.StarBorder, null, Modifier.size(26.dp), Color.White.copy(alpha = .85f))
+                    else {
+                        var artFav by remember { mutableStateOf(false) }
+                        Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.Center, Alignment.CenterVertically) {
+                            LiquidGlassCircle(size = 46.dp, onClick = { if (songs.isNotEmpty()) pl.play(songs.shuffled(), 0) }, dim = 0.16f) {
+                                Icon(Icons.Rounded.Shuffle, null, Modifier.size(22.dp), Color.White)
+                            }
+                            Spacer(Modifier.width(22.dp))
+                            LiquidGlassCircle(
+                                size = 68.dp,
+                                onClick = { if (songs.isNotEmpty()) pl.play(songs, 0) },
+                                tint = Color.White.copy(alpha = 0.22f),
+                                dim = 0.10f,
+                                refractionHeight = 24.dp,
+                                refractionAmount = 46.dp
+                            ) {
+                                IcPlay(36.dp, Color.White)
+                            }
+                            Spacer(Modifier.width(22.dp))
+                            LiquidGlassCircle(
+                                size = 46.dp,
+                                onClick = { artFav = !artFav },
+                                tint = if (artFav) Red.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                                dim = 0.16f
+                            ) {
+                                Icon(if (artFav) Icons.Rounded.Star else Icons.Rounded.StarBorder, null, Modifier.size(22.dp), if (artFav) Red else Color.White)
+                            }
+                        }
                     }
                 }
             }
@@ -1619,18 +1647,18 @@ suspend fun rememberGoogleDisplayFont(ctx: Context, artistName: String): FontFam
                 Glass(Icons.Filled.Share) { share(shareArtist(p.name, relUid, photo)) }
                 // 3 pontinhos do topo: no perfil do próprio artista abre o menu suspenso com "Estatísticas"
                 Box {
-                    Glass(Icons.Rounded.MoreHoriz) { if (mine) menuTopo = true }
-                    DropdownMenu(menuTopo, { menuTopo = false }, Modifier.background(Color(0xFF2C2C2E))) {
-                        DropdownMenuItem(
-                            text = { Text("Estatísticas", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.BarChart, null, tint = Color.White) },
-                            onClick = { menuTopo = false; stats() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Shows e turnês", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Filled.Event, null, tint = Color.White) },
-                            onClick = { menuTopo = false; shows() }
-                        )
+                    Glass(Icons.Rounded.MoreHoriz) { menuTopo = true }
+                    LiquidDropdownMenu(expanded = menuTopo, onDismissRequest = { menuTopo = false }) {
+                        if (mine) {
+                            LiquidDropdownItem("Estatísticas", Icons.Filled.BarChart) { menuTopo = false; stats() }
+                            LiquidDropdownItem("Shows e turnês", Icons.Filled.Event) { menuTopo = false; shows() }
+                        }
+                        LiquidDropdownItem("Compartilhar perfil", Icons.Filled.Share) { menuTopo = false; share(shareArtist(p.name, relUid, photo)) }
+                        LiquidDropdownItem("Próximos Shows", Icons.Filled.CalendarToday, showDivider = false) {
+                            menuTopo = false
+                            if (relUid != null) abrirShows(relUid, p.name, photo)
+                            else Toast.makeText(ctx, "Este artista ainda não cadastrou shows", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }
@@ -1833,12 +1861,11 @@ private fun DrawScope.triR(l: Float, t: Float, r: Float, b: Float, dir: Boolean,
     }
 }
 
-// barra bem arredondada (progresso e volume): engorda enquanto o dedo está nela
-// onDrag = valor ao vivo enquanto arrasta | onDone = valor final (toque ou soltar o dedo)
+// barra bem arredondada (progresso e volume) em Liquid Glass: engorda e refrata enquanto o dedo está nela
 @Composable fun RBar(frac: Float, onDrag: (Float) -> Unit, onDone: (Float) -> Unit, m: Modifier = Modifier) {
     var down by remember { mutableStateOf(false) }
     var last by remember { mutableStateOf(0f) }
-    val h by animateDpAsState(if (down) 14.dp else 8.dp, tween(150), label = "rb")
+    val h by animateDpAsState(if (down) 15.dp else 8.dp, spring(dampingRatio = 0.65f, stiffness = 360f), label = "rb")
     Box(m.height(28.dp)
         .pointerInput(Unit) { detectTapGestures(onPress = { down = true; tryAwaitRelease(); down = false }, onTap = { onDone((it.x / size.width).coerceIn(0f, 1f)) }) }
         .pointerInput(Unit) {
@@ -1848,29 +1875,67 @@ private fun DrawScope.triR(l: Float, t: Float, r: Float, b: Float, dir: Boolean,
                 onDragCancel = { down = false }
             ) { ch, _ -> last = (ch.position.x / size.width).coerceIn(0f, 1f); onDrag(last) }
         }, Alignment.CenterStart) {
-        Box(Modifier.fillMaxWidth().height(h).clip(CircleShape).background(Color.White.copy(alpha = .28f)))
-        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(h).clip(CircleShape).background(Color.White.copy(alpha = .9f)))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(h)
+                .drawLiquidGlass(
+                    shape = CircleShape,
+                    refractionHeight = 8.dp,
+                    refractionAmount = if (down) 24.dp else 14.dp,
+                    dim = if (down) 0.08f else 0.18f,
+                    tint = Color.White.copy(alpha = if (down) 0.26f else 0.18f),
+                    isInteractive = false
+                )
+        )
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(h).clip(CircleShape).background(Color.White.copy(alpha = if (down) .98f else .88f)))
     }
 }
 
-// botão redondo das telas de álbum/playlist (aleatório, favorita)
+// botão redondo das telas de álbum/playlist (aleatório, favorita) com motor Liquid Glass em tempo real
 @Composable fun CBtn(i: ImageVector, tint: Color = Color.White, f: () -> Unit) =
-    Box(Modifier.size(48.dp).tap(f).clip(CircleShape).background(Color.White.copy(alpha = .2f)), Alignment.Center) { Icon(i, null, Modifier.size(22.dp), tint) }
+    LiquidGlassCircle(
+        size = 48.dp,
+        onClick = f,
+        tint = if (tint == Red) Red.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+        dim = 0.16f,
+        refractionHeight = 18.dp,
+        refractionAmount = 34.dp
+    ) {
+        Icon(i, null, Modifier.size(22.dp), tint)
+    }
 
-// aleatório | Reproduzir (em ordem) | favorita
+// aleatório | Reproduzir (em ordem) | favorita — todos com refração e dim em tempo real
 @Composable fun Acoes(tr: List<Track>, pl: Pl) {
     var fav by remember { mutableStateOf(false) }
     Row(Modifier.padding(vertical = 18.dp), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
         CBtn(Icons.Rounded.Shuffle) { if (tr.isNotEmpty()) pl.play(tr.shuffled(), 0) }
-        Row(Modifier.height(48.dp).tap { if (tr.isNotEmpty()) pl.play(tr, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 36.dp), verticalAlignment = Alignment.CenterVertically) {
-            IcPlay(20.dp, Color.Black); T(" Reproduzir", 17, 600, Color.Black)
+        LiquidGlassPill(
+            onClick = { if (tr.isNotEmpty()) pl.play(tr, 0) },
+            height = 48.dp,
+            horizontalPadding = 34.dp,
+            tint = Color.White.copy(alpha = 0.22f),
+            dim = 0.12f,
+            refractionHeight = 20.dp,
+            refractionAmount = 38.dp
+        ) {
+            IcPlay(20.dp, Color.White); T(" Reproduzir", 17, 700, Color.White)
         }
         CBtn(if (fav) Icons.Rounded.Star else Icons.Rounded.StarBorder, if (fav) Red else Color.White) { fav = !fav }
     }
 }
 
-@Composable fun NowBtn(i: ImageVector) =
-    Box(Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = .22f)), Alignment.Center) { Icon(i, null, Modifier.size(18.dp), Color.White) }
+@Composable fun NowBtn(i: ImageVector, tint: Color = Color.White, onClick: (() -> Unit)? = null) =
+    LiquidGlassCircle(
+        size = 38.dp,
+        onClick = onClick,
+        tint = if (tint == Red) Red.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.14f),
+        dim = 0.16f,
+        refractionHeight = 15.dp,
+        refractionAmount = 28.dp
+    ) {
+        Icon(i, null, Modifier.size(18.dp), tint)
+    }
 
 // controle de volume (volume de mídia do aparelho), com alto-falante nas duas pontas como no Apple Music
 @Composable fun VolumeBar() {
@@ -1906,57 +1971,124 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     val alvo = scrub ?: (if (pl.dur > 0) pl.pos / pl.dur else 0f)
     val fr by animateFloatAsState(alvo, if (scrub != null) snap<Float>() else tween(220, easing = LinearEasing), label = "f")
     var drag by remember { mutableStateOf(0f) }
-    Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }) {
-        // fundo: a própria capa, bem desfocada e escurecida com a cor dela (é o que aparece embaixo do nome da música)
-        Crossfade(t.art, Modifier.fillMaxSize(), label = "bg") { u ->
-            AsyncImage(model = hq(u), contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
-        }
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .10f), escuro.copy(alpha = .40f), escuro.copy(alpha = .78f)))))
-        Column(Modifier.fillMaxSize()) {
-            Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
-                if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
-                else Box(Modifier.fillMaxSize()) {
-                    // capa nítida (ou capa animada, se o lançamento tiver) em cima; o blur invade a capa e fica 100% atrás do nome da música, dissolvendo no fundo desfocado
-                    Crossfade(t.art to t.video, Modifier.fillMaxSize(), label = "cv") { (u, v) -> CapaBlur(u, escuro, invade = 300.dp, cheio = 120.dp, funde = 110.dp, video = v, tocando = pl.playing) }
-                    Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
-                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 10.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                        AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
-                            Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
+    var nowFav by remember(t.name) { mutableStateOf(false) }
+    val nowBackdrop = rememberLiquidBackdrop()
+    val nowDimCtrl = remember { GlobalDimController() }
+    val globalDimAlpha by animateFloatAsState(if (nowDimCtrl.isDimmed) 0.46f else 0f, tween(220), label = "nowDim")
+
+    CompositionLocalProvider(
+        LocalLiquidBackdrop provides nowBackdrop,
+        LocalLiquidDim provides nowDimCtrl
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectVerticalDragGestures(onDragEnd = { if (drag > 160) close(); drag = 0f }) { _, dy -> drag += dy } }) {
+            // Camada de fundo capturada em tempo real pelo motor de Liquid Glass (RenderNode + AGSL)
+            Box(Modifier.fillMaxSize().liquidBackdropSource(nowBackdrop)) {
+                Crossfade(t.art, Modifier.fillMaxSize(), label = "bg") { u ->
+                    AsyncImage(model = hq(u), contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }.blur(60.dp), contentScale = ContentScale.Crop)
+                }
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .10f), escuro.copy(alpha = .40f), escuro.copy(alpha = .78f)))))
+                if (!ui.on) {
+                    Box(Modifier.fillMaxWidth().fillMaxHeight(0.64f)) {
+                        Crossfade(t.art to t.video, Modifier.fillMaxSize(), label = "cv") { (u, v) -> CapaBlur(u, escuro, invade = 300.dp, cheio = 120.dp, funde = 110.dp, video = v, tocando = pl.playing) }
+                        Box(Modifier.fillMaxWidth().height(110.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Transparent))))
+                    }
+                }
+            }
+
+            // Dim em tempo real sobre a tela quando menu suspenso está aberto
+            if (globalDimAlpha > 0.01f) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = globalDimAlpha)))
+            }
+
+            Column(Modifier.fillMaxSize()) {
+                Crossfade(ui.on, Modifier.weight(1f).fillMaxWidth(), label = "ly") { l ->
+                    if (l) Box(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 26.dp).padding(top = 30.dp)) { Letra(pl, t, ui) }
+                    else Box(Modifier.fillMaxSize()) {
+                        Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).padding(bottom = 10.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                            AnimatedContent(t, Modifier.weight(1f), transitionSpec = { (slideInHorizontally { it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut()) }, label = "tt") { x ->
+                                Column { T(x.name, 22, 700, Color.White); ATs(x.artist, x.name, x.artistId, x.art, 18, 400, tint) }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            // compartilhar, favoritar e menu suspenso em Liquid Glass com refração em tempo real
+                            NowBtn(Icons.Filled.Share, onClick = { share(shareTrack(t)) })
+                            Spacer(Modifier.width(10.dp))
+                            NowBtn(if (nowFav) Icons.Rounded.Star else Icons.Rounded.StarBorder, tint = if (nowFav) Red else Color.White, onClick = { nowFav = !nowFav })
+                            Spacer(Modifier.width(10.dp))
+                            MenuFaixa(t, { x -> pl.remover(chaveDe(x)) }, 0.dp) { NowBtn(Icons.Rounded.MoreHoriz) }
                         }
-                        Spacer(Modifier.width(12.dp))
-                        // compartilhar a música (story do Instagram, copiar link, mais opções)
-                        Box(Modifier.clip(CircleShape).clickable { share(shareTrack(t)) }) { NowBtn(Icons.Filled.Share) }
-                        Spacer(Modifier.width(10.dp)); NowBtn(Icons.Rounded.StarBorder); Spacer(Modifier.width(10.dp))
-                        // 3 pontinhos: o dono da música toca aqui para excluir
-                        MenuFaixa(t, { x -> pl.remover(chaveDe(x)) }, 0.dp) { NowBtn(Icons.Rounded.MoreHoriz) }
+                    }
+                }
+                Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 26.dp).padding(bottom = 10.dp)) {
+                    RBar(fr, { scrub = it }, { pl.seek(it); scrub = null }, Modifier.padding(top = 14.dp).fillMaxWidth())
+                    val sc = scrub
+                    val ps = if (sc != null) sc * pl.dur else pl.pos
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        T(fmt(ps.toInt()), 12, 500, Color.White.copy(alpha = .7f))
+                        T("Lossless · Liquid Glass", 12, 600, Color.White.copy(alpha = .75f))
+                        T("-" + fmt((pl.dur - ps).toInt().coerceAtLeast(0)), 12, 500, Color.White.copy(alpha = .7f))
+                    }
+                    // Controles principais (Voltar música | Play/Pause | Pular música) em Lentes de Liquid Glass com Refração e Dim em Tempo Real
+                    Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                        LiquidGlassCircle(
+                            size = 72.dp,
+                            onClick = { pl.prev() },
+                            tint = Color.White.copy(alpha = 0.12f),
+                            dim = 0.15f,
+                            refractionHeight = 26.dp,
+                            refractionAmount = 48.dp
+                        ) {
+                            IcSkip(38.dp, false)
+                        }
+                        LiquidGlassCircle(
+                            size = 86.dp,
+                            onClick = { pl.toggle() },
+                            tint = Color.White.copy(alpha = 0.18f),
+                            dim = 0.12f,
+                            refractionHeight = 32.dp,
+                            refractionAmount = 58.dp
+                        ) {
+                            Crossfade(pl.playing, label = "pp") { p -> if (p) IcPause(48.dp) else IcPlay(48.dp) }
+                        }
+                        LiquidGlassCircle(
+                            size = 72.dp,
+                            onClick = { pl.next() },
+                            tint = Color.White.copy(alpha = 0.12f),
+                            dim = 0.15f,
+                            refractionHeight = 26.dp,
+                            refractionAmount = 48.dp
+                        ) {
+                            IcSkip(38.dp, true)
+                        }
+                    }
+                    VolumeBar()
+                    Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                        LiquidGlassCircle(
+                            size = 46.dp,
+                            onClick = { ui.on = !ui.on },
+                            tint = if (ui.on) Color.White.copy(alpha = .28f) else Color.White.copy(alpha = .10f),
+                            dim = if (ui.on) 0.08f else 0.18f
+                        ) {
+                            IcLyrics(22.dp, Color.White.copy(alpha = if (ui.on) 1f else .88f))
+                        }
+                        LiquidGlassCircle(size = 46.dp, tint = Color.White.copy(alpha = .10f), dim = 0.18f) {
+                            IcAirplay(22.dp, Color.White.copy(alpha = .88f))
+                        }
+                        LiquidGlassCircle(size = 46.dp, tint = Color.White.copy(alpha = .10f), dim = 0.18f) {
+                            IcQueue(22.dp, Color.White.copy(alpha = .88f))
+                        }
                     }
                 }
             }
-            Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 26.dp).padding(bottom = 10.dp)) {
-                RBar(fr, { scrub = it }, { pl.seek(it); scrub = null }, Modifier.padding(top = 14.dp).fillMaxWidth())
-                val sc = scrub
-                val ps = if (sc != null) sc * pl.dur else pl.pos
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    T(fmt(ps.toInt()), 12, 500, Color.White.copy(alpha = .7f))
-                    T("Mixing", 12, 600, Color.White.copy(alpha = .7f))
-                    T("-" + fmt((pl.dur - ps).toInt().coerceAtLeast(0)), 12, 500, Color.White.copy(alpha = .7f))
-                }
-                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-                    Box(Modifier.size(76.dp).tap { pl.prev() }, Alignment.Center) { IcSkip(44.dp, false) }
-                    Box(Modifier.size(84.dp).tap { pl.toggle() }, Alignment.Center) { Crossfade(pl.playing, label = "pp") { p -> if (p) IcPause(54.dp) else IcPlay(54.dp) } }
-                    Box(Modifier.size(76.dp).tap { pl.next() }, Alignment.Center) { IcSkip(44.dp, true) }
-                }
-                VolumeBar()
-                Row(Modifier.fillMaxWidth().padding(top = 14.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-                    Box(Modifier.size(44.dp).clip(CircleShape).background(if (ui.on) Color.White.copy(alpha = .28f) else Color.Transparent).clickable { ui.on = !ui.on }, Alignment.Center) {
-                        IcLyrics(24.dp, Color.White.copy(alpha = if (ui.on) 1f else .85f))
-                    }
-                    Box(Modifier.size(44.dp), Alignment.Center) { IcAirplay(24.dp, Color.White.copy(alpha = .85f)) }
-                    Box(Modifier.size(44.dp), Alignment.Center) { IcQueue(24.dp, Color.White.copy(alpha = .85f)) }
-                }
-            }
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 8.dp)
+                    .size(46.dp, 6.dp)
+                    .drawLiquidGlass(shape = CircleShape, refractionHeight = 4.dp, refractionAmount = 12.dp, dim = 0.1f, isInteractive = false)
+                    .clickable(onClick = close)
+            )
         }
-        Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp).size(42.dp, 5.dp).clip(CircleShape).background(Color.White.copy(alpha = .45f)).clickable(onClick = close))
     }
 }
 
@@ -1964,31 +2096,25 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
     val bgc = if (dark) Color.Black else Color.White; val tx = if (dark) Color.White else Color.Black
-    val sf = if (dark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
     val pl = remember { Pl(ctx.applicationContext, stats) }
     DisposableEffect(Unit) { onDispose { pl.release() } }
     val scope = rememberCoroutineScope()
-    // streams reais: cada 30 s ouvidos viram uma linha no banco (usada nas Estatísticas do artista)
     SideEffect { Sess.tok = { auth.jwt } }
     LaunchedEffect(Unit) { pl.onStream = { t -> scope.launch { registrarStream(t) } } }
-    var tab by remember { mutableStateOf(0) }; var np by remember { mutableStateOf(false) }   // np = false: o player completo começa fechado
+    var tab by remember { mutableStateOf(0) }; var np by remember { mutableStateOf(false) }
     val ly = remember { LyUi() }
     val stack = remember { mutableStateListOf<Page>() }
     val sec = remember { mutableStateMapOf<String, List<Album>>() }
     val feat = remember { mutableStateListOf<Feat>().apply { addAll(FEAT.map { Feat(it.first, it.second, null) }) } }
     LaunchedEffect(Unit) { FEAT.forEachIndexed { k, f -> launch { feat[k] = featured(f.first, f.second) } } }
     LaunchedEffect(Unit) { listOf("pop", "hip hop", "r&b", "rock", "electronic").forEach { k -> launch { sec[k] = albums(k) } } }
-    // artistas criados no app: aparecem para todos e atualizam quando alguém edita o perfil
     var appArt by remember { mutableStateOf(listOf<Prof>()) }
     LaunchedEffect(auth.prof) { appArt = appArtists() }
-    // lista "Lançamentos" da Início: recarrega ao voltar de outra tela (assim aparece o que acabou de ser publicado)
     var rels by remember { mutableStateOf(listOf<Rel>()) }
     LaunchedEffect(auth.prof, stack.size) { releasesLoad()?.let { rels = it } }
-    // "Os Melhores": quem reivindicou o perfil escolhe a foto, que vale mais que a do iTunes
     var claimed by remember { mutableStateOf(mapOf<Long, Prof>()) }
     LaunchedEffect(auth.prof) { claimed = claimedByItunes(FEAT.map { it.first }) }
     val featShown = feat.map { f -> claimed[f.id]?.photo?.let { f.copy(photo = it) } ?: f }
-    // menu de compartilhar (story do Instagram / copiar link / mais opções)
     var shareData by remember { mutableStateOf<ShareData?>(null) }
     BackHandler(np || stack.isNotEmpty()) { if (np) np = false else stack.removeAt(stack.lastIndex) }
     val open: (Album) -> Unit = { stack.add(Page.Alb(it)) }
@@ -1997,7 +2123,7 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
         np = false
         val t = stack.lastOrNull()
         if (!(t is Page.Art && t.name == n)) {
-            val ap = if (id == 0L) appArt.firstOrNull { it.name == n } else null   // artista criado no app: abre o perfil dele, não o do iTunes
+            val ap = if (id == 0L) appArt.firstOrNull { it.name == n } else null
             stack.add(if (ap != null) Page.Art(ap.name, ap.itunesId, ap.photo, ap.itunesId == 0L, ap.featured, ap.id) else Page.Art(n, id, art))
         }
     }
@@ -2009,94 +2135,186 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
     val openShowsEdit: () -> Unit = { if (stack.lastOrNull() !is Page.ShowsEdit) stack.add(Page.ShowsEdit) }
     val sub = { stack.isNotEmpty() }
 
-    // barra de navegação: tocando música, ela encolhe (ícone da aba + mini-player + busca) e fica na cor da capa em versão escura
     val tabs = listOf(Icons.Filled.Home to "Início", Icons.Filled.GridView to "Novidades", Icons.Filled.Sensors to "Rádio", Icons.Filled.LibraryMusic to "Biblioteca")
     val (pc1, _) = rememberPal(pl.cur?.art)
-    val navBg by animateColorAsState(if (pl.cur != null) lerp(pc1, Color.Black, .68f) else sf, tween(500), label = "nb")
-    var navOpen by remember { mutableStateOf(false) }   // toque no ícone da aba reabre as 4 abas
+    val navTint by animateColorAsState(if (pl.cur != null) pc1.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.12f), tween(500), label = "nb")
+    var navOpen by remember { mutableStateOf(false) }
     val compact = pl.cur != null && !navOpen
     LaunchedEffect(pl.cur == null) { if (pl.cur == null) navOpen = false }
+
+    val appBackdrop = rememberLiquidBackdrop()
+    val appDimCtrl = remember { GlobalDimController() }
+    val globalDimAlpha by animateFloatAsState(if (appDimCtrl.isDimmed || shareData != null) 0.45f else 0f, tween(220), label = "appDim")
 
     CompositionLocalProvider(
         LocalContentColor provides tx, LocalArtist provides openArtist, LocalAuth provides auth, LocalMe provides openMe,
         LocalRel provides { r: Rel -> np = false; stack.add(Page.Lan(r)) },
         LocalShare provides { d: ShareData -> shareData = d },
         LocalShows provides openShows,
-        LocalShowsEdit provides openShowsEdit
+        LocalShowsEdit provides openShowsEdit,
+        LocalLiquidBackdrop provides appBackdrop,
+        LocalLiquidDim provides appDimCtrl
     ) {
         Box(Modifier.fillMaxSize().background(bgc)) {
-            AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
-                val push = targetState.depth > initialState.depth; val pop = targetState.depth < initialState.depth
-                if (push) (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut())
-                else if (pop) (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
-                else fadeIn(tween(300)) togetherWith fadeOut(tween(150))
-            }, label = "nav") { d ->
-                Box(Modifier.fillMaxSize().background(bgc)) {
-                    val back = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
-                    when (val pg = d.page) {
-                        is Page.Alb -> AlbumS(pg.a, pl) { back() }
-                        is Page.Art -> ArtistS(pg, pl, open) { back() }
-                        Page.Me -> {
-                            val pr = auth.prof
-                            // artista: a mesma tela de perfil de artista, mas editável; ouvinte: tela da conta
-                            if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured, pr.id), pl, open, true, { stack.add(Page.Edit) }, { stack.add(Page.Estat) }, openShowsEdit) { back() }
-                            else AccountS(auth) { back() }
+            // Todo o conteúdo da página é capturado em tempo real pelo appBackdrop para refração na barra de navegação e nos botões de vidro
+            Box(Modifier.fillMaxSize().liquidBackdropSource(appBackdrop)) {
+                AnimatedContent(Nav(tab, stack.lastOrNull(), stack.size), transitionSpec = {
+                    val push = targetState.depth > initialState.depth; val pop = targetState.depth < initialState.depth
+                    if (push) (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it / 3 } + fadeOut())
+                    else if (pop) (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
+                    else fadeIn(tween(300)) togetherWith fadeOut(tween(150))
+                }, label = "nav") { d ->
+                    Box(Modifier.fillMaxSize().background(bgc)) {
+                        val back = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
+                        when (val pg = d.page) {
+                            is Page.Alb -> AlbumS(pg.a, pl) { back() }
+                            is Page.Art -> ArtistS(pg, pl, open) { back() }
+                            Page.Me -> {
+                                val pr = auth.prof
+                                if (pr != null && pr.artist) ArtistS(Page.Art(pr.name, pr.itunesId, pr.photo, true, pr.featured, pr.id), pl, open, true, { stack.add(Page.Edit) }, { stack.add(Page.Estat) }, openShowsEdit) { back() }
+                                else AccountS(auth) { back() }
+                            }
+                            Page.Edit -> EditarS(auth, { stack.add(Page.IStudio) }) { back() }
+                            Page.IStudio -> IStudioS(
+                                auth.prof?.name ?: "",
+                                { auth.jwt },
+                                { auth.uid }
+                            ) { back() }
+                            Page.Estat -> EstatisticasS(auth) { back() }
+                            is Page.Lan -> RelS(pg.r, pl) { back() }
+                            is Page.ShowsList -> ShowsS(pg.uid, pg.nome, pg.foto, { s -> stack.add(Page.ShowDet(s)) }) { back() }
+                            is Page.ShowDet -> ShowDetalheS(pg.s) { back() }
+                            Page.ShowsEdit -> ShowsEditS(auth) { back() }
+                            Page.Rep -> Replay(stats) { back() }
+                            is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
+                            Page.Beats -> BeatsS(openPl) { back() }
+                            null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, featShown, appArt, openApp, rels); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open, pl) { np = false; stack.add(it) } }
                         }
-                        Page.Edit -> EditarS(auth, { stack.add(Page.IStudio) }) { back() }
-                        Page.IStudio -> IStudioS(
-                            auth.prof?.name ?: "",
-                            { auth.jwt },
-                            { auth.uid }
-                        ) { back() }
-                        Page.Estat -> EstatisticasS(auth) { back() }
-                        is Page.Lan -> RelS(pg.r, pl) { back() }
-                        is Page.ShowsList -> ShowsS(pg.uid, pg.nome, pg.foto, { s -> stack.add(Page.ShowDet(s)) }) { back() }
-                        is Page.ShowDet -> ShowDetalheS(pg.s) { back() }
-                        Page.ShowsEdit -> ShowsEditS(auth) { back() }
-                        Page.Rep -> Replay(stats) { back() }
-                        is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
-                        Page.Beats -> BeatsS(openPl) { back() }
-                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, featShown, appArt, openApp, rels); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open, pl) { np = false; stack.add(it) } }
                     }
                 }
             }
+
+            // Dim em tempo real quando qualquer menu suspenso / share sheet é aberto
+            if (globalDimAlpha > 0.01f) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = globalDimAlpha)))
+            }
+
+            // Barra de Navegação iOS 27 em Liquid Glass com Refração e Dim em Tempo Real
             Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp)) {
                 AnimatedContent(compact, transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(140)) }, label = "navmode") { cp ->
                     if (cp) Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
-                        // esquerda: ícone da aba atual (toque para escolher outra aba)
+                        // esquerda: lente circular Liquid Glass da aba atual
                         val ic = tabs[tab.coerceAtMost(3)].first
-                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { navOpen = true }, Alignment.Center) {
+                        LiquidGlassCircle(
+                            size = 54.dp,
+                            onClick = { navOpen = true },
+                            tint = navTint,
+                            dim = 0.22f,
+                            refractionHeight = 20.dp,
+                            refractionAmount = 38.dp
+                        ) {
                             Icon(ic, null, Modifier.size(24.dp), if (tab < 4 && !sub()) Red else Color.White)
                         }
-                        // meio: mini-player (toque abre o player completo)
+                        // meio: mini-player em cápsula Liquid Glass com refração ao vivo
                         pl.cur?.let { t ->
-                            Row(Modifier.weight(1f).height(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { np = true }.padding(start = 7.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            LiquidGlassPill(
+                                onClick = { np = true },
+                                modifier = Modifier.weight(1f),
+                                height = 54.dp,
+                                horizontalPadding = 8.dp,
+                                tint = navTint,
+                                dim = 0.22f,
+                                refractionHeight = 20.dp,
+                                refractionAmount = 40.dp,
+                                horizontalArrangement = Arrangement.Start
+                            ) {
                                 Img(t.art, Modifier.size(40.dp), RoundedCornerShape(10.dp))
                                 Column(Modifier.padding(start = 10.dp).weight(1f)) {
                                     T(t.name, 14, 700, Color.White)
-                                    T(t.artist, 12, 400, Color.White.copy(alpha = .6f))
+                                    T(t.artist, 12, 400, Color.White.copy(alpha = .68f))
                                 }
-                                Box(Modifier.size(44.dp).clip(CircleShape).clickable { pl.toggle() }, Alignment.Center) { Crossfade(pl.playing, label = "m") { p -> if (p) IcPause(24.dp) else IcPlay(24.dp) } }
+                                LiquidGlassCircle(
+                                    size = 40.dp,
+                                    onClick = { pl.toggle() },
+                                    tint = Color.White.copy(alpha = 0.14f),
+                                    dim = 0.12f,
+                                    refractionHeight = 14.dp,
+                                    refractionAmount = 26.dp
+                                ) {
+                                    Crossfade(pl.playing, label = "m") { p -> if (p) IcPause(20.dp) else IcPlay(20.dp) }
+                                }
                             }
                         }
-                        // direita: busca
-                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { stack.clear(); tab = 4 }, Alignment.Center) { Icon(Icons.Filled.Search, null, Modifier.size(24.dp), Red) }
+                        // direita: botão de busca em lente Liquid Glass
+                        LiquidGlassCircle(
+                            size = 54.dp,
+                            onClick = { stack.clear(); tab = 4 },
+                            tint = navTint,
+                            dim = 0.22f,
+                            refractionHeight = 20.dp,
+                            refractionAmount = 38.dp
+                        ) {
+                            Icon(Icons.Filled.Search, null, Modifier.size(24.dp), Red)
+                        }
                     } else Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
-                        Row(Modifier.weight(1f).height(60.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).padding(3.dp)) {
+                        Row(
+                            Modifier
+                                .weight(1f)
+                                .height(62.dp)
+                                .drawLiquidGlass(
+                                    backdrop = appBackdrop,
+                                    shape = CircleShape,
+                                    refractionHeight = 22.dp,
+                                    refractionAmount = 42.dp,
+                                    dim = 0.22f,
+                                    tint = navTint
+                                )
+                                .padding(4.dp)
+                        ) {
                             tabs.forEachIndexed { k, (i, n) ->
                                 val on = tab == k && !sub()
-                                val col by animateColorAsState(if (on) Red else Sub, label = "ic"); val bk by animateColorAsState(if (on) Color.Gray.copy(alpha = .2f) else Color.Transparent, label = "bk")
-                                Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).background(bk).clickable { stack.clear(); tab = k; navOpen = false }, Arrangement.Center, Alignment.CenterHorizontally) {
-                                    Icon(i, null, Modifier.size(22.dp), col); T(n, 9, 600, col)
+                                val col by animateColorAsState(if (on) Red else Color.White.copy(alpha = 0.72f), label = "ic")
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .then(
+                                            if (on) {
+                                                Modifier.drawLiquidGlass(
+                                                    backdrop = appBackdrop,
+                                                    shape = CircleShape,
+                                                    refractionHeight = 14.dp,
+                                                    refractionAmount = 28.dp,
+                                                    dim = 0.08f,
+                                                    tint = Color.White.copy(alpha = 0.18f),
+                                                    isInteractive = false
+                                                )
+                                            } else Modifier.clip(CircleShape)
+                                        )
+                                        .clickable { stack.clear(); tab = k; navOpen = false },
+                                    Arrangement.Center,
+                                    Alignment.CenterHorizontally
+                                ) {
+                                    Icon(i, null, Modifier.size(22.dp), col); T(n, 10, 600, col)
                                 }
                             }
                         }
-                        Box(Modifier.size(54.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(navBg).clickable { stack.clear(); tab = 4; navOpen = false }, Alignment.Center) { Icon(Icons.Filled.Search, null, tint = if (tab == 4 && !sub()) Red else Sub) }
+                        LiquidGlassCircle(
+                            size = 56.dp,
+                            onClick = { stack.clear(); tab = 4; navOpen = false },
+                            tint = navTint,
+                            dim = 0.22f,
+                            refractionHeight = 20.dp,
+                            refractionAmount = 38.dp
+                        ) {
+                            Icon(Icons.Filled.Search, null, tint = if (tab == 4 && !sub()) Red else Color.White)
+                        }
                     }
                 }
             }
-            AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) { Now(pl, ly) { np = false } }
-            // menu de compartilhar fica por cima de tudo
+            AnimatedVisibility(np && pl.cur != null, enter = slideInVertically(spring(.85f, 300f)) { it } + fadeIn(), exit = slideOutVertically(spring(1f, 400f)) { it } + fadeOut()) {
+                Now(pl, ly) { np = false }
+            }
             ShareSheet(shareData) { shareData = null }
         }
     }

@@ -128,9 +128,7 @@ suspend fun claimedByItunes(ids: List<Long>): Map<Long, Prof> {
             T(r.title, 22, 700, Color.White, Modifier.padding(top = 18.dp), 2, TextAlign.Center)
             T(r.artistName, 19, 600, lerp(c1, Color.White, .55f))
             T("${r.label} · ${r.date.take(4)}", 12, 500, Color.White.copy(alpha = .6f), Modifier.padding(top = 2.dp))
-            Row(Modifier.padding(vertical = 18.dp).tap { if (faixas.isNotEmpty()) pl.play(faixas, 0) }.clip(CircleShape).background(Color.White).padding(horizontal = 40.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PlayArrow, null, Modifier.size(22.dp), Color.Black); T(" Reproduzir", 17, 600, Color.Black)
-            }
+            Acoes(faixas, pl)
             faixas.forEachIndexed { k, t ->
                 Row(Modifier.fillMaxWidth().enter(k + 1).tap { pl.play(faixas, k) }.padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                     T("${k + 1}", 15, 400, Color.White.copy(alpha = .6f), Modifier.width(30.dp))
@@ -147,6 +145,6 @@ suspend fun claimedByItunes(ids: List<Long>): Map<Long, Prof> {
                 HorizontalDivider(color = Color.White.copy(alpha = .15f))
             }
         }
-        IconButton(back, Modifier.statusBarsPadding().padding(start = 6.dp, top = 6.dp)) { Icon(Icons.Filled.ArrowBackIosNew, null, tint = Color.White) }
+        Box(Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp)) { Glass(Icons.Filled.ArrowBackIosNew) { back() } }
     }
 }

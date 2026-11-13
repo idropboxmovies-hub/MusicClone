@@ -69,6 +69,8 @@ import kotlin.math.*
 // Baseado em Kyant0/AndroidLiquidGlass (AGSL RuntimeShader + RenderNode
 // + Snell's Law SDF Lens Refraction + 7-Band Chromatic Dispersion + Real-Time Dim)
 // + dev.chrisbanes.haze:haze
+//
+// AJUSTE: menos blur, mais transparente, borda mais fina, refração menor.
 // =====================================================================
 
 private const val AGSL_ROUNDED_RECT_SDF = """
@@ -196,13 +198,13 @@ half4 main(float2 coord) {
 
     // Dim óptico em tempo real (escurecimento dinâmico ao pressionar / ativar)
     float edgeFactor = clamp(1.0 - (-min(sd, 0.0) / max(effRefractionHeight, 1.0)), 0.0, 1.0);
-    float totalDim = clamp(dimAmount + pressIntensity * 0.18, 0.0, 0.88);
+    float totalDim = clamp(dimAmount + pressIntensity * 0.08, 0.0, 0.88);
     baseColor.rgb *= half(1.0 - totalDim);
 
     // Brilho especular Fresnel na borda (responde ao ângulo do toque em tempo real)
     float fresnel = pow(edgeFactor, 2.6);
     float dirSpec = pow(abs(dot(sdfGrad, lightDir)), 1.75);
-    float rimHighlight = fresnel * (0.22 + 0.52 * dirSpec) * (1.0 + pressIntensity * 0.35);
+    float rimHighlight = fresnel * (0.10 + 0.26 * dirSpec) * (1.0 + pressIntensity * 0.35);
     baseColor.rgb += half3(rimHighlight);
 
     return half4(baseColor.rgb, 1.0);
@@ -241,9 +243,9 @@ fun Modifier.liquidBackdropSource(backdrop: LiquidBackdrop): Modifier = this
     .haze(
         state = backdrop.hazeState,
         style = HazeStyle(
-            tint = Color.Black.copy(alpha = 0.12f),
-            blurRadius = 22.dp,
-            noiseFactor = 0.05f
+            tint = Color.Black.copy(alpha = 0.04f),
+            blurRadius = 8.dp,
+            noiseFactor = 0.02f
         )
     )
     .onGloballyPositioned { coords ->
@@ -336,12 +338,12 @@ fun rememberLiquidTouchState(): LiquidTouchState {
 fun Modifier.drawLiquidGlass(
     backdrop: LiquidBackdrop? = LocalLiquidBackdrop.current,
     shape: Shape = CircleShape,
-    refractionHeight: Dp = 18.dp,
-    refractionAmount: Dp = 32.dp,
-    blurRadius: Dp = 6.dp,
-    chromaticAberration: Float = 1.15f,
-    dim: Float = 0.14f,
-    tint: Color = Color.White.copy(alpha = 0.10f),
+    refractionHeight: Dp = 10.dp,
+    refractionAmount: Dp = 16.dp,
+    blurRadius: Dp = 1.5.dp,
+    chromaticAberration: Float = 0.6f,
+    dim: Float = 0.04f,
+    tint: Color = Color.White.copy(alpha = 0.03f),
     depthEffect: Boolean = true,
     isInteractive: Boolean = true,
     touchState: LiquidTouchState? = null
@@ -349,7 +351,7 @@ fun Modifier.drawLiquidGlass(
     val activeTouch = touchState ?: if (isInteractive) rememberLiquidTouchState() else null
     val press = activeTouch?.pressProgress ?: 0f
     val animDim by animateFloatAsState(
-        targetValue = (dim + press * 0.18f).coerceIn(0f, 0.85f),
+        targetValue = (dim + press * 0.08f).coerceIn(0f, 0.85f),
         animationSpec = tween(140),
         label = "liquidDim"
     )
@@ -416,8 +418,8 @@ fun Modifier.drawLiquidGlass(
                 rec.drawRenderNode(srcNode)
                 glassNode.endRecording()
 
-                // 1) Vibrancy (saturação óptica de vidro) + Blur suave
-                val cm = ColorMatrix().apply { setSaturation(1.48f) }
+                // 1) Vibrancy (saturação óptica de vidro) + Blur bem leve
+                val cm = ColorMatrix().apply { setSaturation(1.15f) }
                 val blurEff = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.MIRROR)
                 val vibrantBlur = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm), blurEff)
 
@@ -450,12 +452,12 @@ fun Modifier.drawLiquidGlass(
                 }
             } else {
                 // Fallback seguro quando o RenderNode ainda está inicializando no primeiro frame
-                drawRect(Color(0xFF1E1E24).copy(alpha = 0.52f))
+                drawRect(Color(0xFF1E1E24).copy(alpha = 0.18f))
                 drawRect(tint)
                 drawRect(Color.Black.copy(alpha = animDim))
             }
 
-            // Borda especular cristalina dupla (efeito de lente curva iOS 27)
+            // Borda especular cristalina (fina)
             drawLiquidRimHighlight(size, radii, lightDirX, lightDirY, press)
 
             // Conteúdo nítido acima da lente (ícones e textos)
@@ -487,7 +489,7 @@ private fun DrawScope.drawLiquidRimHighlight(
     press: Float
 ) {
     val r = radii.firstOrNull() ?: (size.minDimension / 2f)
-    val strokeW = (1.25f + press * 0.6f).dp.toPx()
+    val strokeW = (0.6f + press * 0.3f).dp.toPx()
     val startOffset = Offset(
         x = size.width * (0.5f + 0.45f * lightX),
         y = size.height * (0.5f + 0.45f * lightY)
@@ -498,10 +500,10 @@ private fun DrawScope.drawLiquidRimHighlight(
     )
     val rimBrush = Brush.linearGradient(
         colors = listOf(
-            Color.White.copy(alpha = (0.72f + press * 0.2f).coerceAtMost(0.98f)),
-            Color.White.copy(alpha = 0.16f),
-            Color(0xFF88D4FF).copy(alpha = 0.28f),
-            Color.White.copy(alpha = 0.52f)
+            Color.White.copy(alpha = (0.45f + press * 0.2f).coerceAtMost(0.8f)),
+            Color.White.copy(alpha = 0.08f),
+            Color(0xFF88D4FF).copy(alpha = 0.14f),
+            Color.White.copy(alpha = 0.30f)
         ),
         start = startOffset,
         end = endOffset
@@ -526,10 +528,10 @@ fun LiquidGlassCircle(
     size: Dp = 42.dp,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    tint: Color = Color.White.copy(alpha = 0.10f),
-    dim: Float = 0.16f,
-    refractionHeight: Dp = (size.value * 0.34f).dp,
-    refractionAmount: Dp = (size.value * 0.65f).dp,
+    tint: Color = Color.White.copy(alpha = 0.03f),
+    dim: Float = 0.04f,
+    refractionHeight: Dp = (size.value * 0.20f).dp,
+    refractionAmount: Dp = (size.value * 0.32f).dp,
     content: @Composable BoxScope.() -> Unit
 ) {
     val touch = rememberLiquidTouchState()
@@ -568,10 +570,10 @@ fun LiquidGlassPill(
     modifier: Modifier = Modifier,
     height: Dp = 48.dp,
     cornerRadius: Dp = 999.dp,
-    tint: Color = Color.White.copy(alpha = 0.12f),
-    dim: Float = 0.16f,
-    refractionHeight: Dp = 18.dp,
-    refractionAmount: Dp = 34.dp,
+    tint: Color = Color.White.copy(alpha = 0.03f),
+    dim: Float = 0.04f,
+    refractionHeight: Dp = 10.dp,
+    refractionAmount: Dp = 16.dp,
     horizontalPadding: Dp = 20.dp,
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Center,
     content: @Composable RowScope.() -> Unit
@@ -634,11 +636,11 @@ fun LiquidDropdownMenu(
                     .widthIn(min = 225.dp, max = 270.dp)
                     .drawLiquidGlass(
                         shape = shape,
-                        refractionHeight = 24.dp,
-                        refractionAmount = 42.dp,
-                        blurRadius = 12.dp,
-                        dim = 0.28f,
-                        tint = Color.White.copy(alpha = 0.12f)
+                        refractionHeight = 14.dp,
+                        refractionAmount = 22.dp,
+                        blurRadius = 4.dp,
+                        dim = 0.14f,
+                        tint = Color.White.copy(alpha = 0.05f)
                     )
                     .padding(vertical = 8.dp),
                 content = content

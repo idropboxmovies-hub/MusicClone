@@ -183,7 +183,16 @@ suspend fun compartilharStory(ctx: Context, d: ShareData) {
 
 // ---------- menu de compartilhar ----------
 @Composable private fun OpcaoShare(i: ImageVector, t: String, busy: Boolean = false, f: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .08f)).clickable(enabled = !busy) { f() }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    LiquidGlassPill(
+        onClick = if (!busy) f else null,
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        height = 54.dp,
+        cornerRadius = 16.dp,
+        tint = Color.White.copy(alpha = 0.12f),
+        dim = 0.18f,
+        horizontalPadding = 16.dp,
+        horizontalArrangement = Arrangement.Start
+    ) {
         Icon(i, null, Modifier.size(24.dp), Color.White)
         T(t, 16, 600, Color.White, Modifier.padding(start = 14.dp))
     }

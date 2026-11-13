@@ -688,13 +688,370 @@ typealias Sec = Map<String, List<Album>>
     H("Adicionados Recentemente"); Rw { itemsIndexed(sec["rock"].orEmpty()) { k, a -> Cv(a, open, Modifier.width(150.dp).enter(k)) } }
 }
 
-@Composable fun SearchS(open: (Album) -> Unit) = Scr("Buscar") {
-    var q by remember { mutableStateOf("") }; var res by remember { mutableStateOf(listOf<Album>()) }
-    LaunchedEffect(q) { if (q.isBlank()) res = emptyList() else { delay(400); res = albums(q) } }
+// ---------- Busca por Link (Apple Music, Spotify, iTunes e beats) ----------
+data class LinkHit(val art: Page.Art? = null, val track: Track? = null, val album: Album? = null, val rel: Rel? = null)
+
+private val URL_RX = Regex("(https?://[^\\s\"<>]+|spotify:(?:track|artist|album):[A-Za-z0-9]+|(?:open\\.spotify\\.com|play\\.spotify\\.com|spotify\\.link|spoti\\.fi|music\\.apple\\.com|geo\\.music\\.apple\\.com|itunes\\.apple\\.com|apple\\.co)/[^\\s\"<>]+)", RegexOption.IGNORE_CASE)
+private val SP_RX = Regex("(?:(?:open|play)\\.spotify\\.com/(?:intl-[a-zA-Z-]+/)?(?:embed/)?|spotify:)(track|artist|album)[/:]([A-Za-z0-9]{15,30})", RegexOption.IGNORE_CASE)
+private val NEXT_RX = Regex("<script\\s+id=\"__NEXT_DATA__\"[^>]*>([^<]+)</script>", RegexOption.IGNORE_CASE)
+private val OG_TITLE_RX = Regex("<meta\\s+(?:property|name)=\"og:title\"\\s+content=\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+private val OG_DESC_RX = Regex("<meta\\s+(?:property|name)=\"og:description\"\\s+content=\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+private val OG_IMG_RX = Regex("<meta\\s+(?:property|name)=\"og:image\"\\s+content=\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+private val TITLE_TAG_RX = Regex("<title>([^<]+)</title>", RegexOption.IGNORE_CASE)
+
+fun ehLink(s: String): Boolean {
+    val t = s.trim()
+    return t.isNotEmpty() && URL_RX.containsMatchIn(t)
+}
+
+fun extrairUrl(s: String): String {
+    val m = URL_RX.find(s.trim())?.value?.trimEnd('.', ',', ')', ']', ';') ?: return s.trim()
+    return if (m.startsWith("http://", true) || m.startsWith("https://", true) || m.startsWith("spotify:", true)) m else "https://$m"
+}
+
+suspend fun httpHtml(u: String): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        val c = URL(u).openConnection() as java.net.HttpURLConnection
+        c.instanceFollowRedirects = true
+        c.connectTimeout = 8000; c.readTimeout = 10000
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36")
+        c.setRequestProperty("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+        c.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
+}
+
+suspend fun seguirRedirect(u: String): String = withContext(Dispatchers.IO) {
+    if (u.startsWith("spotify:", true)) return@withContext u
+    runCatching {
+        var cur = u
+        repeat(4) {
+            val c = URL(cur).openConnection() as java.net.HttpURLConnection
+            c.instanceFollowRedirects = false
+            c.connectTimeout = 6000; c.readTimeout = 6000
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+            val code = c.responseCode
+            val loc = c.getHeaderField("Location")
+            c.disconnect()
+            if (code in 300..399 && !loc.isNullOrBlank()) {
+                cur = if (loc.startsWith("http")) loc else URL(URL(cur), loc).toString()
+            } else return@runCatching cur
+        }
+        cur
+    }.getOrDefault(u)
+}
+
+private fun decHtml(s: String): String = s
+    .replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+    .replace("&#x27;", "'").replace("&nbsp;", " ").trim()
+
+private suspend fun montarArtistaHit(nome0: String, id0: Long = 0L, foto0: String? = null): LinkHit? {
+    val nomeLimpo = nome0.trim()
+    val ap = if (nomeLimpo.isNotEmpty()) runCatching { appArtists().firstOrNull { norm(it.name) == norm(nomeLimpo) } }.getOrNull() else null
+    val id = when {
+        id0 != 0L -> id0
+        ap != null && ap.itunesId != 0L -> ap.itunesId
+        nomeLimpo.isNotEmpty() -> resolveId(nomeLimpo)
+        else -> 0L
+    }
+    var nome = nomeLimpo
+    if (nome.isEmpty() && id != 0L) {
+        for (cc in listOf("BR", "US")) {
+            val n = get("https://itunes.apple.com/lookup?id=$id&country=$cc")?.optJSONArray("results")?.optJSONObject(0)?.optString("artistName").orEmpty()
+            if (n.isNotEmpty()) { nome = n; break }
+        }
+    }
+    if (nome.isEmpty() && ap != null) nome = ap.name
+    if (nome.isEmpty()) return null
+    val cl = if (id != 0L) runCatching { profileByItunes(id) }.getOrNull() else null
+    val foto = cl?.photo ?: ap?.photo ?: photoOf(nome) ?: foto0?.takeIf { it.isNotBlank() } ?: latest(id)?.album?.art
+    val ehApp = (ap != null && id == 0L) || cl != null
+    return LinkHit(art = Page.Art(cl?.name ?: ap?.name ?: nome, id, foto, ehApp && id == 0L, cl?.featured ?: ap?.featured, cl?.id ?: ap?.id))
+}
+
+private suspend fun acharFaixaPorNome(titulo: String, artista: String, ccs: List<String> = listOf("BR", "US")): Track? {
+    val tNorm = norm(tituloLimpo(titulo)).ifEmpty { norm(titulo) }
+    val aNorm = norm(splitArtistas(artista).firstOrNull() ?: artista)
+    runCatching {
+        releasesLoad()?.flatMap { it.tracks }?.firstOrNull {
+            val tn = norm(tituloLimpo(it.name)).ifEmpty { norm(it.name) }
+            (tn == tNorm || tn.contains(tNorm) || tNorm.contains(tn)) && (aNorm.isEmpty() || norm(it.artist).contains(aNorm) || aNorm.contains(norm(it.artist)))
+        }
+    }.getOrNull()?.let { return it }
+    val q = if (artista.isNotBlank()) "$titulo $artista" else titulo
+    for (cc in ccs) {
+        val lista = searchSongs(q, cc)
+        if (lista.isEmpty()) continue
+        val exata = lista.firstOrNull {
+            val tn = norm(tituloLimpo(it.name)).ifEmpty { norm(it.name) }
+            val okT = tn == tNorm || tn.contains(tNorm) || tNorm.contains(tn)
+            val okA = aNorm.isEmpty() || creditos(it.artist, it.name).any { c -> val cn = norm(c); cn == aNorm || cn.contains(aNorm) || aNorm.contains(cn) }
+            okT && okA
+        } ?: lista.firstOrNull {
+            val tn = norm(tituloLimpo(it.name)).ifEmpty { norm(it.name) }
+            tn == tNorm || tn.contains(tNorm) || tNorm.contains(tn)
+        } ?: lista.firstOrNull()
+        if (exata != null) return exata
+    }
+    return null
+}
+
+suspend fun resolverApple(u: String): LinkHit? {
+    val uri = runCatching { Uri.parse(u) }.getOrNull() ?: return null
+    val path = uri.path.orEmpty()
+    val segs = uri.pathSegments.orEmpty()
+    val ccUrl = segs.firstOrNull()?.takeIf { it.length == 2 && it.all { c -> c.isLetter() } }?.uppercase()
+    val ccs = listOfNotNull(ccUrl, "BR", "US").distinct()
+    val iParam = uri.getQueryParameter("i")?.filter { it.isDigit() }?.toLongOrNull()
+    val pathId = Regex("(?:id)?(\\d{5,20})(?:\\D*)$").find(path)?.groupValues?.get(1)?.toLongOrNull()
+    val slug = segs.dropLast(1).lastOrNull { !it.equals("artist", true) && !it.equals("album", true) && !it.equals("song", true) && !it.equals("music-video", true) && it.length > 2 }
+        ?.replace("-", " ")?.trim().orEmpty()
+
+    val ehSong = iParam != null || path.contains("/song/", true) || path.contains("/music-video/", true)
+    val ehArtist = !ehSong && path.contains("/artist/", true)
+    val ehAlbum = !ehSong && path.contains("/album/", true)
+
+    if (ehArtist) {
+        val aid = pathId ?: 0L
+        return montarArtistaHit(slug, aid)
+    }
+
+    if (ehSong) {
+        val tid = iParam ?: pathId ?: 0L
+        if (tid != 0L) {
+            for (cc in ccs) {
+                val res = get("https://itunes.apple.com/lookup?id=$tid&entity=song&country=$cc")?.optJSONArray("results") ?: continue
+                val objs = (0 until res.length()).mapNotNull { res.optJSONObject(it) }
+                val trObj = objs.firstOrNull { it.optString("wrapperType") == "track" && it.optLong("trackId") == tid && it.has("previewUrl") }
+                    ?: objs.firstOrNull { it.optString("wrapperType") == "track" && it.has("previewUrl") }
+                if (trObj != null) return LinkHit(track = toTrack(trObj))
+            }
+            if (iParam != null && pathId != null && pathId != tid) {
+                for (cc in ccs) {
+                    val res = get("https://itunes.apple.com/lookup?id=$pathId&entity=song&country=$cc")?.optJSONArray("results") ?: continue
+                    val objs = (0 until res.length()).mapNotNull { res.optJSONObject(it) }
+                    val trObj = objs.firstOrNull { it.optString("wrapperType") == "track" && it.optLong("trackId") == tid && it.has("previewUrl") }
+                    if (trObj != null) return LinkHit(track = toTrack(trObj))
+                }
+            }
+        }
+        val html = httpHtml(u).orEmpty()
+        val ogT = OG_TITLE_RX.find(html)?.groupValues?.get(1)?.let { decHtml(it) }.orEmpty()
+        if (ogT.isNotEmpty()) {
+            val limpo = ogT.replace(Regex("\\s+no\\s+Apple\\s+Music.*$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+on\\s+Apple\\s+Music.*$", RegexOption.IGNORE_CASE), "").trim()
+            val partes = limpo.split(Regex("\\s+(?:de|by)\\s+", RegexOption.IGNORE_CASE), limit = 2)
+            val nMus = partes.firstOrNull().orEmpty().trim()
+            val nArt = partes.getOrNull(1).orEmpty().trim()
+            acharFaixaPorNome(nMus, nArt, ccs)?.let { return LinkHit(track = it) }
+        }
+        if (slug.isNotEmpty()) acharFaixaPorNome(slug, "", ccs)?.let { return LinkHit(track = it) }
+        return null
+    }
+
+    if (ehAlbum) {
+        val cid = pathId ?: 0L
+        if (cid != 0L) {
+            for (cc in ccs) {
+                val res = get("https://itunes.apple.com/lookup?id=$cid&entity=song&country=$cc")?.optJSONArray("results") ?: continue
+                val objs = (0 until res.length()).mapNotNull { res.optJSONObject(it) }
+                val col = objs.firstOrNull { it.optString("wrapperType") == "collection" }
+                val faixas = semOcultas(objs.filter { it.optString("wrapperType") == "track" && it.has("previewUrl") }.map { toTrack(it) })
+                if (col != null) {
+                    val al = Album(
+                        col.optLong("collectionId"),
+                        col.optString("collectionName"),
+                        col.optString("artistName"),
+                        col.optString("artworkUrl100").replace("100x100", "600x600"),
+                        col.optString("primaryGenreName"),
+                        col.optString("releaseDate").take(4),
+                        col.optLong("artistId")
+                    )
+                    return if (faixas.size == 1) LinkHit(track = faixas.first()) else LinkHit(album = al)
+                }
+                if (faixas.isNotEmpty()) return LinkHit(track = faixas.first())
+            }
+        }
+        if (slug.isNotEmpty()) albums(slug).firstOrNull()?.let { return LinkHit(album = it) }
+    }
+
+    if (pathId != null) {
+        for (cc in ccs) {
+            val res = get("https://itunes.apple.com/lookup?id=$pathId&entity=song&country=$cc")?.optJSONArray("results") ?: continue
+            val first = res.optJSONObject(0) ?: continue
+            when (first.optString("wrapperType")) {
+                "artist" -> return montarArtistaHit(first.optString("artistName"), first.optLong("artistId"))
+                "track" -> if (first.has("previewUrl")) return LinkHit(track = toTrack(first))
+                "collection" -> {
+                    val al = Album(first.optLong("collectionId"), first.optString("collectionName"), first.optString("artistName"), first.optString("artworkUrl100").replace("100x100", "600x600"), first.optString("primaryGenreName"), first.optString("releaseDate").take(4), first.optLong("artistId"))
+                    return LinkHit(album = al)
+                }
+            }
+        }
+    }
+    return null
+}
+
+suspend fun resolverSpotify(u: String): LinkHit? = coroutineScope {
+    val m = SP_RX.find(u) ?: return@coroutineScope null
+    val kind = m.groupValues[1].lowercase()
+    val sid = m.groupValues[2]
+
+    val embedDef = async { httpHtml("https://open.spotify.com/embed/$kind/$sid") }
+    val oembedDef = async { get("https://open.spotify.com/oembed?url=https://open.spotify.com/$kind/$sid") }
+    val embedHtml = embedDef.await().orEmpty()
+    val oembed = oembedDef.await()
+
+    val entity = NEXT_RX.find(embedHtml)?.groupValues?.get(1)?.let { raw ->
+        runCatching {
+            JSONObject(raw).optJSONObject("props")?.optJSONObject("pageProps")?.optJSONObject("state")?.optJSONObject("data")?.optJSONObject("entity")
+        }.getOrNull()
+    }
+
+    var titulo = entity?.optString("title").orEmpty().ifEmpty { entity?.optString("name").orEmpty() }.ifEmpty { oembed?.optString("title").orEmpty() }
+    var artista = ""
+    var cover = oembed?.optString("thumbnail_url").orEmpty()
+    var preview = ""
+    var dur = 0
+    var explicit = false
+    var year = ""
+
+    if (entity != null) {
+        val arts = entity.optJSONArray("artists")
+        if (arts != null && arts.length() > 0) {
+            artista = (0 until arts.length()).mapNotNull { arts.optJSONObject(it)?.optString("name")?.takeIf { n -> n.isNotEmpty() } }.joinToString(", ")
+        }
+        if (artista.isEmpty()) artista = entity.optString("subtitle").orEmpty()
+        preview = entity.optJSONObject("audioPreview")?.optString("url").orEmpty()
+        dur = (entity.optLong("duration", 0L) / 1000L).toInt()
+        explicit = entity.optBoolean("isExplicit", false)
+        year = entity.optJSONObject("releaseDate")?.optString("isoString")?.take(4).orEmpty()
+        val imgs = entity.optJSONObject("visualIdentity")?.optJSONArray("image")
+        if (imgs != null && imgs.length() > 0) {
+            val bestImg = (0 until imgs.length()).mapNotNull { imgs.optJSONObject(it) }.maxByOrNull { it.optInt("maxWidth", 0) }?.optString("url").orEmpty()
+            if (bestImg.isNotEmpty()) cover = bestImg
+        }
+    }
+
+    if (titulo.isEmpty() || (kind != "artist" && artista.isEmpty())) {
+        val pageHtml = httpHtml("https://open.spotify.com/$kind/$sid").orEmpty()
+        if (titulo.isEmpty()) {
+            titulo = OG_TITLE_RX.find(pageHtml)?.groupValues?.get(1)?.let { decHtml(it) }.orEmpty()
+                .replace(Regex("^Listen to\\s+", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s*\\|\\s*Spotify.*$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+-\\s+(?:song and lyrics|Album|Single)\\s+by\\s+.*$", RegexOption.IGNORE_CASE), "").trim()
+        }
+        if (artista.isEmpty()) {
+            val desc = OG_DESC_RX.find(pageHtml)?.groupValues?.get(1)?.let { decHtml(it) }.orEmpty()
+            val tTag = TITLE_TAG_RX.find(pageHtml)?.groupValues?.get(1)?.let { decHtml(it) }.orEmpty()
+            artista = Regex("by\\s+([^|]+)\\|", RegexOption.IGNORE_CASE).find(tTag)?.groupValues?.get(1)?.trim()
+                ?: desc.split("·").firstOrNull()?.trim().orEmpty()
+        }
+        if (cover.isEmpty()) cover = OG_IMG_RX.find(pageHtml)?.groupValues?.get(1).orEmpty()
+    }
+
+    when (kind) {
+        "artist" -> montarArtistaHit(titulo, 0L, cover)
+        "track" -> {
+            if (titulo.isEmpty()) return@coroutineScope null
+            val achada = acharFaixaPorNome(titulo, artista)
+            if (achada != null) {
+                LinkHit(track = achada.copy(
+                    art = achada.art.ifEmpty { cover },
+                    url = achada.url.ifEmpty { preview }
+                ))
+            } else if (preview.isNotEmpty() || cover.isNotEmpty()) {
+                val aid = if (artista.isNotEmpty()) resolveId(splitArtistas(artista).first()) else 0L
+                LinkHit(track = Track(titulo, artista.ifEmpty { "Artista" }, cover, preview, titulo, aid, year, explicit, dur))
+            } else null
+        }
+        "album" -> {
+            if (titulo.isEmpty()) return@coroutineScope null
+            val q = if (artista.isNotBlank()) "$titulo $artista" else titulo
+            val lista = albums(q)
+            val tNorm = norm(titulo)
+            val al = lista.firstOrNull { val n = norm(it.name); n == tNorm || n.contains(tNorm) || tNorm.contains(n) } ?: lista.firstOrNull()
+            if (al != null) LinkHit(album = al)
+            else acharFaixaPorNome(titulo, artista)?.let { LinkHit(track = it) }
+        }
+        else -> null
+    }
+}
+
+suspend fun resolverBeats(u: String): LinkHit? {
+    val uri = runCatching { Uri.parse(u) }.getOrNull() ?: return null
+    val path = uri.path.orEmpty()
+    Regex("/a/([A-Za-z0-9-]+)").find(path)?.groupValues?.get(1)?.let { uid ->
+        val r = sb("GET", "/rest/v1/profiles?id=eq.$uid&select=*&limit=1")
+        val p = if (r.ok) r.arr()?.optJSONObject(0)?.toProf() else null
+        if (p != null) return LinkHit(art = Page.Art(p.name, p.itunesId, p.photo, p.itunesId == 0L, p.featured, p.id))
+    }
+    Regex("/r/([A-Za-z0-9-]+)").find(path)?.groupValues?.get(1)?.let { rid ->
+        val rel = releasesLoad()?.firstOrNull { it.id == rid }
+        if (rel != null) return LinkHit(rel = rel)
+    }
+    Regex("/t/([A-Za-z0-9-]+)").find(path)?.groupValues?.get(1)?.let { tid ->
+        val tr = releasesLoad()?.flatMap { it.tracks }?.firstOrNull { it.tid == tid }
+        if (tr != null) return LinkHit(track = tr)
+    }
+    val k = uri.getQueryParameter("k").orEmpty()
+    val t = uri.getQueryParameter("t").orEmpty()
+    val a = uri.getQueryParameter("a").orEmpty()
+    val img = uri.getQueryParameter("i").orEmpty()
+    if (k.isNotEmpty() && t.isNotEmpty()) {
+        return when (k) {
+            "artist" -> montarArtistaHit(t, 0L, img)
+            "track" -> acharFaixaPorNome(t, a)?.let { LinkHit(track = it) }
+            "album" -> albums("$t $a").firstOrNull()?.let { LinkHit(album = it) }
+            else -> null
+        }
+    }
+    return null
+}
+
+suspend fun resolverLink(raw: String): LinkHit? {
+    val u0 = extrairUrl(raw)
+    val u = if (u0.contains("spotify.link", true) || u0.contains("spoti.fi", true) || u0.contains("apple.co", true)) seguirRedirect(u0) else u0
+    return when {
+        SP_RX.containsMatchIn(u) || u.contains("spotify.com", true) -> resolverSpotify(u)
+        u.contains("apple.com", true) -> resolverApple(u)
+        else -> resolverBeats(u)
+    }
+}
+
+@Composable fun SearchS(open: (Album) -> Unit, pl: Pl? = null, openArt: ((Page.Art) -> Unit)? = null) = Scr("Buscar") {
+    val goArtist = LocalArtist.current
+    val goRel = LocalRel.current
+    var q by remember { mutableStateOf("") }
+    var res by remember { mutableStateOf(listOf<Album>()) }
+    var hit by remember { mutableStateOf<LinkHit?>(null) }
+    var buscando by remember { mutableStateOf(false) }
+    val linkMode = remember(q) { ehLink(q) }
+
+    LaunchedEffect(q) {
+        if (q.isBlank()) {
+            res = emptyList(); hit = null; buscando = false
+        } else if (ehLink(q)) {
+            res = emptyList(); hit = null; buscando = true
+            delay(150)
+            hit = resolverLink(q)
+            buscando = false
+        } else {
+            hit = null; buscando = true
+            delay(400)
+            res = albums(q)
+            buscando = false
+        }
+    }
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.Gray.copy(alpha = .16f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.Search, null, Modifier.size(20.dp), Sub); Spacer(Modifier.width(8.dp))
         BasicTextField(q, { q = it }, Modifier.weight(1f), singleLine = true, textStyle = TextStyle(color = LocalContentColor.current, fontSize = 16.sp, fontFamily = Sf), cursorBrush = SolidColor(Red),
             decorationBox = { inner -> if (q.isEmpty()) T("Artistas, Músicas, Letras e mais", 16, 400, Sub); inner() })
+        if (q.isNotEmpty()) {
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.size(20.dp).clip(CircleShape).background(Sub.copy(alpha = .35f)).clickable { q = "" }, Alignment.Center) {
+                Icon(Icons.Filled.Close, null, Modifier.size(13.dp), Color.White)
+            }
+        }
     }
     if (q.isBlank()) {
         H("Explorar Categorias")
@@ -702,6 +1059,71 @@ typealias Sec = Map<String, List<Album>>
             Triple("Dance", 300f, "dance"), Triple("Pop", 330f, "pop"), Triple("Rock", 10f, "rock"), Triple("Treino", 90f, "workout")).chunked(2).forEachIndexed { r, row ->
             Row(Modifier.padding(bottom = 12.dp), Arrangement.spacedBy(12.dp)) {
                 row.forEachIndexed { k, c -> Box(Modifier.weight(1f).height(88.dp).enter(r * 2 + k).tap { q = c.third }.clip(RoundedCornerShape(12.dp)).background(grad(c.second, 30f)).padding(10.dp)) { T(c.first, 16, 700, Color.White) } }
+            }
+        }
+    } else if (linkMode) {
+        if (buscando) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(20.dp), Red, 2.dp)
+                T("  Buscando pelo link…", 14, 500, Sub)
+            }
+        } else {
+            val h = hit
+            if (h == null || (h.art == null && h.track == null && h.album == null && h.rel == null)) {
+                T("Nenhum resultado encontrado para este link.", 14, 500, Sub, Modifier.padding(vertical = 20.dp))
+            } else {
+                h.art?.let { ar ->
+                    Row(Modifier.fillMaxWidth().enter(0).tap { openArt?.invoke(ar) ?: goArtist(ar.name, ar.id, ar.art) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(56.dp).clip(CircleShape).background(Color(0xFF2C2C2E)), Alignment.Center) {
+                            T(ar.name.take(1).uppercase(), 22, 800, Color.White)
+                            if (ar.art != null) AsyncImage(model = ar.art, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        }
+                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                            T(ar.name, 17, 700)
+                            T("Artista", 13, 400, Sub)
+                        }
+                        Icon(Icons.Filled.ChevronRight, null, tint = Sub)
+                    }
+                    HorizontalDivider(color = Color.Gray.copy(alpha = .2f))
+                }
+                h.track?.let { t ->
+                    Row(Modifier.fillMaxWidth().enter(1).tap { pl?.play(listOf(t), 0) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(t.art, Modifier.size(54.dp), RoundedCornerShape(8.dp))
+                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                T(t.name, 16, 600, m = Modifier.weight(1f, false))
+                                if (t.explicit) Box(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(3.dp)).background(Color.Gray.copy(alpha = .35f)).padding(horizontal = 4.dp)) { T("E", 10, 700) }
+                            }
+                            ATs(t.artist, t.name, t.artistId, t.art, 13, 400, Sub)
+                            T("Música" + (if (t.album.isNotEmpty()) " · ${t.album}" else ""), 12, 400, Sub)
+                        }
+                        Box(Modifier.size(34.dp).clip(CircleShape).background(Red.copy(alpha = .15f)), Alignment.Center) { IcPlay(16.dp, Red) }
+                    }
+                    HorizontalDivider(color = Color.Gray.copy(alpha = .2f))
+                }
+                h.album?.let { a ->
+                    Row(Modifier.fillMaxWidth().enter(2).tap { open(a) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(a.art, Modifier.size(54.dp))
+                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                            T(a.name, 16, 600)
+                            ATs(a.artist, "", a.artistId, a.art, 13, 400, Sub)
+                            T("Álbum · ${a.year}", 12, 400, Sub)
+                        }
+                        Icon(Icons.Filled.ChevronRight, null, tint = Sub)
+                    }
+                    HorizontalDivider(color = Color.Gray.copy(alpha = .2f))
+                }
+                h.rel?.let { r ->
+                    Row(Modifier.fillMaxWidth().enter(3).tap { goRel(r) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Img(r.cover, Modifier.size(54.dp))
+                        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                            T(r.title, 16, 600)
+                            T("${r.label} · ${r.artistName}", 13, 400, Sub)
+                        }
+                        Icon(Icons.Filled.ChevronRight, null, tint = Sub)
+                    }
+                    HorizontalDivider(color = Color.Gray.copy(alpha = .2f))
+                }
             }
         }
     } else res.forEachIndexed { k, a ->
@@ -1441,7 +1863,7 @@ fun hq(u: String) = u.replace("300x300", "1000x1000").replace("600x600", "1000x1
                         Page.Rep -> Replay(stats) { back() }
                         is Page.Plst -> PlaylistS(pg.p, pl, openBeats) { back() }
                         Page.Beats -> BeatsS(openPl) { back() }
-                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, featShown, appArt, openApp, rels); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open) }
+                        null -> when (d.tab) { 0 -> Home(sec, open, { stack.add(Page.Rep) }, mix, openPl, featShown, appArt, openApp, rels); 1 -> NewS(sec, open); 2 -> Radio(sec, open, mix); 3 -> Lib(sec, open); else -> SearchS(open, pl) { np = false; stack.add(it) } }
                     }
                 }
             }

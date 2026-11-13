@@ -117,7 +117,6 @@ uniform float depthEffect;
 uniform float chromaticAberration;
 uniform float dimAmount;
 uniform float pressIntensity;
-uniform float2 lightDir;
 uniform float4 tintColor;
 
 $AGSL_ROUNDED_RECT_SDF
@@ -197,15 +196,8 @@ half4 main(float2 coord) {
     baseColor.rgb = mix(baseColor.rgb, half3(tintColor.rgb), half(tintColor.a));
 
     // Dim óptico em tempo real (escurecimento dinâmico ao pressionar / ativar)
-    float edgeFactor = clamp(1.0 - (-min(sd, 0.0) / max(effRefractionHeight, 1.0)), 0.0, 1.0);
     float totalDim = clamp(dimAmount + pressIntensity * 0.08, 0.0, 0.88);
     baseColor.rgb *= half(1.0 - totalDim);
-
-    // Brilho especular Fresnel na borda (responde ao ângulo do toque em tempo real)
-    float fresnel = pow(edgeFactor, 2.6);
-    float dirSpec = pow(abs(dot(sdfGrad, lightDir)), 1.75);
-    float rimHighlight = fresnel * (0.10 + 0.26 * dirSpec) * (1.0 + pressIntensity * 0.35);
-    baseColor.rgb += half3(rimHighlight);
 
     return half4(baseColor.rgb, 1.0);
 }
@@ -219,6 +211,7 @@ class LiquidBackdrop {
     var sourcePositionInWindow: Offset by mutableStateOf(Offset.Zero)
     var sourceSize: Int by mutableIntStateOf(0)
     var frameTick: Long by mutableLongStateOf(0L)
+    @Volatile var recordingSource: Boolean = false
 }
 
 @Composable
@@ -265,9 +258,11 @@ fun Modifier.liquidBackdropSource(backdrop: LiquidBackdrop): Modifier = this
             val prevSize = drawContext.size
             drawContext.canvas = Canvas(recording)
             drawContext.size = size
+            backdrop.recordingSource = true
             try {
                 this@drawWithContent.drawContent()
             } finally {
+                backdrop.recordingSource = false
                 drawContext.canvas = prevCanvas
                 drawContext.size = prevSize
                 node.endRecording()
@@ -340,12 +335,13 @@ fun Modifier.drawLiquidGlass(
     shape: Shape = CircleShape,
     refractionHeight: Dp = 10.dp,
     refractionAmount: Dp = 16.dp,
-    blurRadius: Dp = 1.5.dp,
-    chromaticAberration: Float = 0.6f,
+    blurRadius: Dp = 1.dp,
+    chromaticAberration: Float = 0.4f,
     dim: Float = 0.04f,
     tint: Color = Color.White.copy(alpha = 0.03f),
     depthEffect: Boolean = true,
     isInteractive: Boolean = true,
+    fallbackAlpha: Float = 0.18f,
     touchState: LiquidTouchState? = null
 ): Modifier {
     val activeTouch = touchState ?: if (isInteractive) rememberLiquidTouchState() else null
@@ -356,6 +352,7 @@ fun Modifier.drawLiquidGlass(
         label = "liquidDim"
     )
     val density = LocalDensity.current
+    val insideSource = remember { BooleanArray(1) }
     var myWindowPos by remember { mutableStateOf(Offset.Zero) }
     val glassNode = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) RenderNode("liquid_glass_lens") else null
@@ -402,63 +399,75 @@ fun Modifier.drawLiquidGlass(
             val lightDirX = cos(angle)
             val lightDirY = sin(angle)
 
+            // Se este vidro e desenhado DENTRO da gravacao do backdrop, ele nunca usa o RenderNode
+            // (evita ciclo vidro -> backdrop -> vidro, que fecha o app).
+            if (backdrop?.recordingSource == true) insideSource[0] = true
+
             val srcNode = backdrop?.contentNode
             val canRenderNode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                     glassNode != null &&
                     srcNode != null &&
+                    !insideSource[0] &&
                     srcNode.hasDisplayList() &&
                     drawContext.canvas.nativeCanvas.isHardwareAccelerated
 
+            var drawnWithLens = false
             if (canRenderNode && glassNode != null && srcNode != null) {
-                val relX = myWindowPos.x - (backdrop?.sourcePositionInWindow?.x ?: 0f)
-                val relY = myWindowPos.y - (backdrop?.sourcePositionInWindow?.y ?: 0f)
-                glassNode.setPosition(0, 0, w, h)
-                val rec = glassNode.beginRecording(w, h)
-                rec.translate(-relX, -relY)
-                rec.drawRenderNode(srcNode)
-                glassNode.endRecording()
+                try {
+                    val relX = myWindowPos.x - (backdrop?.sourcePositionInWindow?.x ?: 0f)
+                    val relY = myWindowPos.y - (backdrop?.sourcePositionInWindow?.y ?: 0f)
+                    glassNode.setPosition(0, 0, w, h)
+                    val rec = glassNode.beginRecording(w, h)
+                    try {
+                        rec.translate(-relX, -relY)
+                        rec.drawRenderNode(srcNode)
+                    } finally {
+                        glassNode.endRecording()
+                    }
 
-                // 1) Vibrancy (saturação óptica de vidro) + Blur bem leve
-                val cm = ColorMatrix().apply { setSaturation(1.15f) }
-                val blurEff = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.MIRROR)
-                val vibrantBlur = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm), blurEff)
+                    // 1) Vibrancy leve + Blur bem leve
+                    val cm = ColorMatrix().apply { setSaturation(1.15f) }
+                    val blurEff = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.MIRROR)
+                    val vibrantBlur = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm), blurEff)
 
-                // 2) Refração Óptica AGSL em Tempo Real (Android 13+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && runtimeShader != null) {
-                    runtimeShader.setFloatUniform("size", size.width, size.height)
-                    runtimeShader.setFloatUniform("offset", 0f, 0f)
-                    runtimeShader.setFloatUniform("cornerRadii", radii[0], radii[1], radii[2], radii[3])
-                    runtimeShader.setFloatUniform("refractionHeight", refH)
-                    runtimeShader.setFloatUniform("refractionAmount", refAmt)
-                    runtimeShader.setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
-                    runtimeShader.setFloatUniform("chromaticAberration", chromaticAberration)
-                    runtimeShader.setFloatUniform("dimAmount", animDim)
-                    runtimeShader.setFloatUniform("pressIntensity", press)
-                    runtimeShader.setFloatUniform("lightDir", lightDirX, lightDirY)
-                    runtimeShader.setFloatUniform("tintColor", tint.red, tint.green, tint.blue, tint.alpha)
+                    // 2) Refração Óptica AGSL em Tempo Real (Android 13+)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && runtimeShader != null) {
+                        runtimeShader.setFloatUniform("size", size.width, size.height)
+                        runtimeShader.setFloatUniform("offset", 0f, 0f)
+                        runtimeShader.setFloatUniform("cornerRadii", radii[0], radii[1], radii[2], radii[3])
+                        runtimeShader.setFloatUniform("refractionHeight", refH)
+                        runtimeShader.setFloatUniform("refractionAmount", refAmt)
+                        runtimeShader.setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
+                        runtimeShader.setFloatUniform("chromaticAberration", chromaticAberration)
+                        runtimeShader.setFloatUniform("dimAmount", animDim)
+                        runtimeShader.setFloatUniform("pressIntensity", press)
+                        runtimeShader.setFloatUniform("tintColor", tint.red, tint.green, tint.blue, tint.alpha)
 
-                    val shaderEff = RenderEffect.createRuntimeShaderEffect(runtimeShader, "content")
-                    glassNode.setRenderEffect(RenderEffect.createChainEffect(shaderEff, vibrantBlur))
-                } else {
-                    glassNode.setRenderEffect(vibrantBlur)
+                        val shaderEff = RenderEffect.createRuntimeShaderEffect(runtimeShader, "content")
+                        glassNode.setRenderEffect(RenderEffect.createChainEffect(shaderEff, vibrantBlur))
+                    } else {
+                        glassNode.setRenderEffect(vibrantBlur)
+                    }
+
+                    drawContext.canvas.nativeCanvas.drawRenderNode(glassNode)
+                    drawnWithLens = true
+
+                    // Android 12 (sem AGSL): aplica tint e dim por cima do RenderNode
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        drawRect(tint)
+                        drawRect(Color.Black.copy(alpha = animDim))
+                    }
+                } catch (e: Throwable) {
+                    drawnWithLens = false
                 }
+            }
 
-                drawContext.canvas.nativeCanvas.drawRenderNode(glassNode)
-
-                // Se estiver no Android 12 (sem AGSL), aplica o dim e tint por cima do RenderNode
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                    drawRect(tint)
-                    drawRect(Color.Black.copy(alpha = animDim))
-                }
-            } else {
-                // Fallback seguro quando o RenderNode ainda está inicializando no primeiro frame
-                drawRect(Color(0xFF1E1E24).copy(alpha = 0.18f))
+            if (!drawnWithLens) {
+                // Fallback seguro (sem refração): translúcido simples
+                drawRect(Color(0xFF1E1E24).copy(alpha = fallbackAlpha))
                 drawRect(tint)
                 drawRect(Color.Black.copy(alpha = animDim))
             }
-
-            // Borda especular cristalina (fina)
-            drawLiquidRimHighlight(size, radii, lightDirX, lightDirY, press)
 
             // Conteúdo nítido acima da lente (ícones e textos)
             drawContent()
@@ -479,41 +488,6 @@ private fun extractCornerRadii(shape: Shape, size: Size, density: androidx.compo
         }
         else -> floatArrayOf(maxR, maxR, maxR, maxR)
     }
-}
-
-private fun DrawScope.drawLiquidRimHighlight(
-    size: Size,
-    radii: FloatArray,
-    lightX: Float,
-    lightY: Float,
-    press: Float
-) {
-    val r = radii.firstOrNull() ?: (size.minDimension / 2f)
-    val strokeW = (0.6f + press * 0.3f).dp.toPx()
-    val startOffset = Offset(
-        x = size.width * (0.5f + 0.45f * lightX),
-        y = size.height * (0.5f + 0.45f * lightY)
-    )
-    val endOffset = Offset(
-        x = size.width * (0.5f - 0.45f * lightX),
-        y = size.height * (0.5f - 0.45f * lightY)
-    )
-    val rimBrush = Brush.linearGradient(
-        colors = listOf(
-            Color.White.copy(alpha = (0.45f + press * 0.2f).coerceAtMost(0.8f)),
-            Color.White.copy(alpha = 0.08f),
-            Color(0xFF88D4FF).copy(alpha = 0.14f),
-            Color.White.copy(alpha = 0.30f)
-        ),
-        start = startOffset,
-        end = endOffset
-    )
-    drawRoundRect(
-        brush = rimBrush,
-        size = size,
-        cornerRadius = CornerRadius(r, r),
-        style = Stroke(width = strokeW)
-    )
 }
 
 // =====================================================================
@@ -635,10 +609,12 @@ fun LiquidDropdownMenu(
                 modifier = modifier
                     .widthIn(min = 225.dp, max = 270.dp)
                     .drawLiquidGlass(
+                        backdrop = null,
+                        fallbackAlpha = 0.5f,
                         shape = shape,
                         refractionHeight = 14.dp,
                         refractionAmount = 22.dp,
-                        blurRadius = 4.dp,
+                        blurRadius = 3.dp,
                         dim = 0.14f,
                         tint = Color.White.copy(alpha = 0.05f)
                     )

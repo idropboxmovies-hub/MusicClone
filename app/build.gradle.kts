@@ -6,7 +6,7 @@ plugins{
 }
 android{
  namespace="com.musicclone"
- compileSdk=34
+ compileSdk=35
  defaultConfig{applicationId="com.musicclone";minSdk=26;targetSdk=34;versionCode=3;versionName="3.0-LiquidGlass"}
  buildFeatures{compose=true}
  composeOptions{kotlinCompilerExtensionVersion="1.5.14"}
@@ -35,7 +35,6 @@ dependencies{
  implementation("androidx.core:core-ktx:1.13.1")
  implementation("androidx.palette:palette:1.0.0")
  implementation("io.coil-kt:coil-compose:2.6.0")
- // Bibliotecas reais de Liquid Glass / Blur / Real-time Backdrop
  implementation("dev.chrisbanes.haze:haze:0.7.3")
  implementation("dev.chrisbanes.haze:haze-materials:0.7.3")
 }

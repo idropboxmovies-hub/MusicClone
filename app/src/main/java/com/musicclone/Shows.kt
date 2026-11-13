@@ -126,9 +126,7 @@ private val fundoCinza = Brush.verticalGradient(listOf(CINZA_TOPO, CINZA_BASE))
 
 @Composable private fun ShTopo(titulo: String, voltar: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = .14f)).clickable { voltar() }, Alignment.Center) {
-            Icon(Icons.Filled.ArrowBackIosNew, null, Modifier.size(18.dp), Color.White)
-        }
+        Glass(Icons.Filled.ArrowBackIosNew) { voltar() }
         T(titulo, 22, 700, Color.White, Modifier.padding(start = 12.dp))
     }
 }

@@ -1301,6 +1301,199 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
     }
 }
 
+// ---------- Logotipo oficial do artista (Fanart.tv ClearLOGO + MusicBrainz + Fallback Google Fonts & Palette) ----------
+
+// Chave de projeto da API v3 do Fanart.tv (você também pode gerar a sua em https://fanart.tv/get-an-api-key/)
+const val FANART_API_KEY = "6b2a9499238ce6416783fc8129b8ac67"
+
+private val LOGO_MEM_CACHE = HashMap<String, String>() // chave normalizada -> URL do PNG ou "NONE"
+private val FONT_MEM_CACHE = HashMap<String, FontFamily>()
+
+// Fontes marcantes do Google Fonts baixadas sob demanda e salvas no cache interno do aparelho
+private val GOOGLE_DISPLAY_FONTS = listOf(
+    "syne" to "https://github.com/google/fonts/raw/main/ofl/syne/Syne%5Bwght%5D.ttf",
+    "righteous" to "https://github.com/google/fonts/raw/main/ofl/righteous/Righteous-Regular.ttf",
+    "cinzel" to "https://github.com/google/fonts/raw/main/ofl/cinzeldecorative/CinzelDecorative-Black.ttf",
+    "bebas" to "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf"
+)
+
+// 1. Consulta o MusicBrainz pelo nome do artista vindo do iTunes e devolve o MBID correspondente
+suspend fun mbidOf(name: String): String? = withContext(Dispatchers.IO) {
+    val q = Uri.encode(name.trim())
+    val url = "https://musicbrainz.org/ws/2/artist/?query=artist:$q&fmt=json&limit=5"
+    val raw = runCatching {
+        val c = URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000; c.readTimeout = 10000
+        c.setRequestProperty("User-Agent", "MusicClone/2.0 (Android; https://github.com/idropboxmovies-hub/MusicClone)")
+        c.setRequestProperty("Accept", "application/json")
+        c.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull() ?: return@withContext null
+
+    val arr = runCatching { JSONObject(raw).optJSONArray("artists") }.getOrNull() ?: return@withContext null
+    val list = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+    val alvo = norm(name)
+    if (alvo.isEmpty()) return@withContext null
+
+    val exato = list.firstOrNull { norm(it.optString("name")) == alvo }
+        ?: list.firstOrNull {
+            val n = norm(it.optString("name"))
+            val score = it.optInt("score", 0)
+            score >= 85 && n.isNotEmpty() && (n.contains(alvo) || alvo.contains(n))
+        }
+    exato?.optString("id")?.takeIf { it.isNotEmpty() }
+}
+
+// 2. Com o MBID em mãos, busca o ClearLOGO (PNG transparente) na API v3 do Fanart.tv
+suspend fun fanartClearLogoOf(mbid: String): String? = withContext(Dispatchers.IO) {
+    if (mbid.isBlank()) return@withContext null
+    val url = "https://webservice.fanart.tv/v3/music/$mbid?api_key=$FANART_API_KEY"
+    val raw = httpText(url) ?: return@withContext null
+    val json = runCatching { JSONObject(raw) }.getOrNull() ?: return@withContext null
+
+    for (campo in listOf("hdmusiclogo", "musiclogo")) {
+        val arr = json.optJSONArray(campo) ?: continue
+        val melhor = (0 until arr.length())
+            .mapNotNull { arr.optJSONObject(it) }
+            .maxByOrNull { it.optString("likes").toIntOrNull() ?: 0 }
+        val logoUrl = melhor?.optString("url")?.takeIf { it.startsWith("http") }
+        if (logoUrl != null) return@withContext logoUrl
+    }
+    null
+}
+
+// Resolve e guarda em cache (memória + SharedPreferences) o ClearLOGO do artista
+suspend fun resolveArtistLogo(ctx: Context, name: String): String? {
+    val k = norm(name)
+    if (k.isEmpty()) return null
+    synchronized(LOGO_MEM_CACHE) {
+        LOGO_MEM_CACHE[k]?.let { return if (it == "NONE") null else it }
+    }
+    val sp = ctx.getSharedPreferences("fanart_logos_v1", Context.MODE_PRIVATE)
+    sp.getString(k, null)?.let { salvo ->
+        synchronized(LOGO_MEM_CACHE) { LOGO_MEM_CACHE[k] = salvo }
+        return if (salvo == "NONE") null else salvo
+    }
+    val mbid = mbidOf(name)
+    val logo = if (mbid != null) fanartClearLogoOf(mbid) else null
+    val valor = logo ?: "NONE"
+    synchronized(LOGO_MEM_CACHE) { LOGO_MEM_CACHE[k] = valor }
+    sp.edit().putString(k, valor).apply()
+    return logo
+}
+
+// Carrega uma fonte marcante do Google Fonts para o fallback inteligente de artistas independentes
+suspend fun rememberGoogleDisplayFont(ctx: Context, artistName: String): FontFamily = withContext(Dispatchers.IO) {
+    val idx = (artistName.lowercase().hashCode() and 0x7FFFFFFF) % GOOGLE_DISPLAY_FONTS.size
+    val (fontKey, fontUrl) = GOOGLE_DISPLAY_FONTS[idx]
+    synchronized(FONT_MEM_CACHE) { FONT_MEM_CACHE[fontKey]?.let { return@withContext it } }
+    val dir = java.io.File(ctx.filesDir, "google_fonts").apply { mkdirs() }
+    val file = java.io.File(dir, "$fontKey.ttf")
+    runCatching {
+        if (!file.exists() || file.length() < 1000L) {
+            val tmp = java.io.File(dir, "$fontKey.tmp")
+            URL(fontUrl).openStream().use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
+            tmp.renameTo(file)
+        }
+        val tf = android.graphics.Typeface.createFromFile(file)
+        val fam = FontFamily(tf)
+        synchronized(FONT_MEM_CACHE) { FONT_MEM_CACHE[fontKey] = fam }
+        fam
+    }.getOrDefault(Sf)
+}
+
+// Extrai a cor de destaque vibrante da foto de perfil do artista usando Palette
+@Composable fun rememberHighlightAccent(photoUrl: String?): Color {
+    val ctx = LocalContext.current
+    var accent by remember(photoUrl) { mutableStateOf(Color.White) }
+    LaunchedEffect(photoUrl) {
+        if (photoUrl == null) { accent = Color.White; return@LaunchedEffect }
+        val r = ctx.imageLoader.execute(
+            ImageRequest.Builder(ctx).data(photoUrl).allowHardware(false).size(200).build()
+        )
+        val bmp = (r as? SuccessResult)?.drawable?.toBitmap() ?: return@LaunchedEffect
+        val pal = withContext(Dispatchers.Default) { Palette.from(bmp).generate() }
+        val raw = pal.getLightVibrantColor(
+            pal.getVibrantColor(
+                pal.getLightMutedColor(
+                    pal.getDominantColor(0xFFFFFFFF.toInt())
+                )
+            )
+        )
+        accent = lerp(Color(raw), Color.White, 0.28f)
+    }
+    val anim by animateColorAsState(accent, tween(650), label = "logoAccent")
+    return anim
+}
+
+// Componente principal do topo do perfil: exibe o ClearLOGO PNG do Fanart.tv ou o Fallback Inteligente
+@Composable fun LogoArtista(
+    name: String,
+    photoUrl: String?,
+    somenteNoApp: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val ctx = LocalContext.current
+    val corDestaque = rememberHighlightAccent(photoUrl)
+    var logoUrl by remember(name) { mutableStateOf<String?>(null) }
+    var buscou by remember(name) { mutableStateOf(somenteNoApp) }
+    var erroImg by remember(name) { mutableStateOf(false) }
+    var fonteFallback by remember(name) { mutableStateOf<FontFamily>(Sf) }
+
+    LaunchedEffect(name, somenteNoApp) {
+        erroImg = false
+        launch { fonteFallback = rememberGoogleDisplayFont(ctx, name) }
+        if (somenteNoApp) {
+            logoUrl = null
+            buscou = true
+        } else {
+            logoUrl = resolveArtistLogo(ctx, name)
+            buscou = true
+        }
+    }
+
+    Box(
+        modifier = modifier.fillMaxWidth().heightIn(min = 52.dp, max = 96.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        val urlFinal = logoUrl
+        if (urlFinal != null && !erroImg) {
+            AsyncImage(
+                model = ImageRequest.Builder(ctx)
+                    .data(urlFinal)
+                    .crossfade(350)
+                    .build(),
+                contentDescription = name,
+                modifier = Modifier
+                    .fillMaxWidth(0.82f)
+                    .heightIn(max = 86.dp),
+                contentScale = ContentScale.Fit,
+                onError = { erroImg = true }
+            )
+        } else if (buscou) {
+            Text(
+                text = name,
+                modifier = Modifier.padding(horizontal = 8.dp),
+                color = corDestaque,
+                fontSize = if (name.length > 18) 30.sp else 38.sp,
+                fontWeight = FontWeight.ExtraBold,
+                fontFamily = fonteFallback,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = if (name.length > 18) 34.sp else 42.sp,
+                letterSpacing = (-0.5).sp,
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = corDestaque.copy(alpha = 0.55f),
+                        offset = Offset(0f, 3f),
+                        blurRadius = 22f
+                    )
+                )
+            )
+        }
+    }
+}
+
 // Perfil do artista (estilo Apple Music): foto de fundo + blur em degradê atrás dos botões
 @Composable fun ArtistS(p: Page.Art, pl: Pl, open: (Album) -> Unit, mine: Boolean = false, edit: () -> Unit = {}, stats: () -> Unit = {}, shows: () -> Unit = {}, back: () -> Unit) {
     val ctx = LocalContext.current
@@ -1366,7 +1559,7 @@ val ZONA_ALBUM = 260.dp   // altura da sombra atrás do título e dos ícones
                     }.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.CalendarToday, null, Modifier.size(12.dp), Color.White); T("  Próximos Shows", 11, 600, Color.White)
                     }
-                    T(p.name, 36, 700, Color.White, Modifier.padding(top = 8.dp), 2, TextAlign.Center)
+                    LogoArtista(p.name, photo, p.app && p.id == 0L, Modifier.padding(top = 8.dp))
                     if (mine) Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Pilula("Editar perfil", Modifier, icon = Icons.Filled.Edit, on = edit)
                         Pilula("Shows", Modifier, icon = Icons.Filled.Event, on = shows)

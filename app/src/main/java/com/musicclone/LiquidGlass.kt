@@ -9,21 +9,14 @@ import android.graphics.RenderNode
 import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.os.Build
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -33,18 +26,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.ContentDrawScope
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,7 +38,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
@@ -70,7 +54,8 @@ import kotlin.math.*
 // + Snell's Law SDF Lens Refraction + 7-Band Chromatic Dispersion + Real-Time Dim)
 // + dev.chrisbanes.haze:haze
 //
-// AJUSTE: menos blur, mais transparente, borda mais fina, refração menor.
+// AJUSTE: sem efeito branco nas bordas, menos blur, proteção total contra
+// ciclo de RenderNode (ancestral LayoutCoordinates + flag de gravação).
 // =====================================================================
 
 private const val AGSL_ROUNDED_RECT_SDF = """
@@ -104,7 +89,7 @@ float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {
 }
 """
 
-// Shader AGSL de Refração Óptica + Dispersão Cromática de 7 Bandas + Dim em Tempo Real + Specular Rim
+// Shader AGSL de Refração Óptica + Dispersão Cromática Suave + Dim em Tempo Real (sem borda branca)
 private const val AGSL_LIQUID_GLASS_SHADER = """
 uniform shader content;
 
@@ -126,65 +111,71 @@ float circleMap(float x) {
     return 1.0 - sqrt(max(0.0, 1.0 - cx * cx));
 }
 
+float2 clampCoord(float2 p, float2 s) {
+    float2 minP = float2(1.0, 1.0);
+    float2 maxP = max(s - float2(1.0, 1.0), minP);
+    return clamp(p, minP, maxP);
+}
+
 half4 main(float2 coord) {
     float2 halfSize = max(size * 0.5, float2(1.0));
     float2 centeredCoord = (coord + offset) - halfSize;
     float radius = min(radiusAt(centeredCoord, cornerRadii), min(halfSize.x, halfSize.y));
 
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
-    float effRefractionHeight = max(refractionHeight * (1.0 + pressIntensity * 0.35), 1.0);
-    float effRefractionAmount = refractionAmount * (1.0 + pressIntensity * 0.45);
+    float effRefractionHeight = max(refractionHeight * (1.0 + pressIntensity * 0.30), 1.0);
+    float effRefractionAmount = refractionAmount * (1.0 + pressIntensity * 0.35);
 
     float2 cNorm = centeredCoord / max(length(centeredCoord), 0.001);
-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+    float gradRadius = min(radius * 1.35, min(halfSize.x, halfSize.y));
     float2 sdfGrad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
     float2 grad = normalize(sdfGrad + depthEffect * cNorm);
 
     half4 baseColor;
     if (-sd >= effRefractionHeight) {
         // Centro óptico da lente: deslocamento suave de profundidade
-        float2 centerShift = cNorm * (pressIntensity * 3.5);
-        baseColor = content.eval(coord + centerShift);
+        float2 centerShift = cNorm * (pressIntensity * 2.5);
+        baseColor = content.eval(clampCoord(coord + centerShift, size));
     } else {
         float clampedSd = min(sd, 0.0);
         float d = circleMap(1.0 - (-clampedSd / effRefractionHeight)) * effRefractionAmount;
         float2 refractedCoord = coord + d * grad;
 
-        // Dispersão cromática de 7 comprimentos de onda (espectro completo iOS 27)
+        // Dispersão cromática controlada de 7 comprimentos de onda (sem halo branco nas curvas)
         float cornerFactor = (centeredCoord.x * centeredCoord.y) / max(halfSize.x * halfSize.y, 1.0);
-        float disp = chromaticAberration * (0.45 + abs(cornerFactor) * 0.85) * (1.0 + pressIntensity * 0.5);
-        float2 dispersedCoord = d * grad * disp * 0.14;
+        float disp = chromaticAberration * (0.35 + abs(cornerFactor) * 0.65) * (1.0 + pressIntensity * 0.35);
+        float2 dispersedCoord = d * grad * disp * 0.09;
 
         half4 color = half4(0.0);
 
-        half4 red = content.eval(refractedCoord + dispersedCoord);
+        half4 red = content.eval(clampCoord(refractedCoord + dispersedCoord, size));
         color.r += red.r / 3.5;
         color.a += red.a / 7.0;
 
-        half4 orange = content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0));
+        half4 orange = content.eval(clampCoord(refractedCoord + dispersedCoord * (2.0 / 3.0), size));
         color.r += orange.r / 3.5;
         color.g += orange.g / 7.0;
         color.a += orange.a / 7.0;
 
-        half4 yellow = content.eval(refractedCoord + dispersedCoord * (1.0 / 3.0));
+        half4 yellow = content.eval(clampCoord(refractedCoord + dispersedCoord * (1.0 / 3.0), size));
         color.r += yellow.r / 3.5;
         color.g += yellow.g / 3.5;
         color.a += yellow.a / 7.0;
 
-        half4 green = content.eval(refractedCoord);
+        half4 green = content.eval(clampCoord(refractedCoord, size));
         color.g += green.g / 3.5;
         color.a += green.a / 7.0;
 
-        half4 cyan = content.eval(refractedCoord - dispersedCoord * (1.0 / 3.0));
+        half4 cyan = content.eval(clampCoord(refractedCoord - dispersedCoord * (1.0 / 3.0), size));
         color.g += cyan.g / 3.5;
         color.b += cyan.b / 3.0;
         color.a += cyan.a / 7.0;
 
-        half4 blue = content.eval(refractedCoord - dispersedCoord * (2.0 / 3.0));
+        half4 blue = content.eval(clampCoord(refractedCoord - dispersedCoord * (2.0 / 3.0), size));
         color.b += blue.b / 3.0;
         color.a += blue.a / 7.0;
 
-        half4 purple = content.eval(refractedCoord - dispersedCoord);
+        half4 purple = content.eval(clampCoord(refractedCoord - dispersedCoord, size));
         color.r += purple.r / 7.0;
         color.b += purple.b / 3.0;
         color.a += purple.a / 7.0;
@@ -192,7 +183,7 @@ half4 main(float2 coord) {
         baseColor = color;
     }
 
-    // Mistura de tint translúcido da superfície de vidro
+    // Mistura de tint translúcido da superfície de vidro (sem embranquecer as bordas)
     baseColor.rgb = mix(baseColor.rgb, half3(tintColor.rgb), half(tintColor.a));
 
     // Dim óptico em tempo real (escurecimento dinâmico ao pressionar / ativar)
@@ -208,6 +199,7 @@ class LiquidBackdrop {
     val hazeState: HazeState = HazeState()
     internal val contentNode: RenderNode? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) RenderNode("liquid_backdrop_source") else null
+    internal var sourceCoordinates: LayoutCoordinates? = null
     var sourcePositionInWindow: Offset by mutableStateOf(Offset.Zero)
     var sourceSize: Int by mutableIntStateOf(0)
     var frameTick: Long by mutableLongStateOf(0L)
@@ -229,6 +221,24 @@ class GlobalDimController {
 val LocalLiquidDim = compositionLocalOf { GlobalDimController() }
 
 /**
+ * Verifica se as coordenadas do elemento de vidro estão dentro da árvore do próprio
+ * container liquidBackdropSource, impedindo qualquer ciclo de RenderNode.
+ */
+private fun isDescendantOfBackdropSource(
+    childCoords: LayoutCoordinates?,
+    sourceCoords: LayoutCoordinates?
+): Boolean {
+    if (childCoords == null || sourceCoords == null) return true
+    if (!childCoords.isAttached || !sourceCoords.isAttached) return true
+    var cur: LayoutCoordinates? = childCoords
+    while (cur != null) {
+        if (cur == sourceCoords) return true
+        cur = cur.parentLayoutCoordinates
+    }
+    return false
+}
+
+/**
  * Captura o conteúdo de fundo em tempo real tanto no RenderNode nativo (para o RuntimeShader AGSL)
  * quanto no HazeState da biblioteca dev.chrisbanes.haze.
  */
@@ -236,13 +246,14 @@ fun Modifier.liquidBackdropSource(backdrop: LiquidBackdrop): Modifier = this
     .haze(
         state = backdrop.hazeState,
         style = HazeStyle(
-            tint = Color.Black.copy(alpha = 0.04f),
-            blurRadius = 8.dp,
-            noiseFactor = 0.02f
+            tint = Color.Black.copy(alpha = 0.03f),
+            blurRadius = 5.dp,
+            noiseFactor = 0.01f
         )
     )
     .onGloballyPositioned { coords ->
         if (coords.isAttached) {
+            backdrop.sourceCoordinates = coords
             backdrop.sourcePositionInWindow = coords.positionInWindow()
             backdrop.sourceSize = coords.size.width + coords.size.height
         }
@@ -274,7 +285,7 @@ fun Modifier.liquidBackdropSource(backdrop: LiquidBackdrop): Modifier = this
     }
 
 /**
- * Estado interativo em tempo real (toque, pressão, arrasto elástico e ângulo de luz especular)
+ * Estado interativo em tempo real (toque, pressão, arrasto elástico e ângulo de luz)
  */
 @Stable
 class LiquidTouchState(private val scope: kotlinx.coroutines.CoroutineScope) {
@@ -325,7 +336,7 @@ fun rememberLiquidTouchState(): LiquidTouchState {
 /**
  * Modificador principal que aplica o motor óptico de Liquid Glass em tempo real:
  * - Refração por Lei de Snell via AGSL RuntimeShader (Android 13+)
- * - Blur + Saturação Vibrancy via RenderEffect nativo (Android 12+)
+ * - Blur bem sutil + Vibrancy via RenderEffect nativo (Android 12+)
  * - Dim dinâmico em tempo real (ao tocar, segurar ou abrir opções)
  * - Deformação elástica em gel (tanh squash & stretch)
  */
@@ -333,12 +344,12 @@ fun rememberLiquidTouchState(): LiquidTouchState {
 fun Modifier.drawLiquidGlass(
     backdrop: LiquidBackdrop? = LocalLiquidBackdrop.current,
     shape: Shape = CircleShape,
-    refractionHeight: Dp = 10.dp,
-    refractionAmount: Dp = 16.dp,
-    blurRadius: Dp = 1.dp,
-    chromaticAberration: Float = 0.4f,
-    dim: Float = 0.04f,
-    tint: Color = Color.White.copy(alpha = 0.03f),
+    refractionHeight: Dp = 8.dp,
+    refractionAmount: Dp = 12.dp,
+    blurRadius: Dp = 0.55.dp,
+    chromaticAberration: Float = 0.24f,
+    dim: Float = 0.05f,
+    tint: Color = Color.White.copy(alpha = 0.015f),
     depthEffect: Boolean = true,
     isInteractive: Boolean = true,
     fallbackAlpha: Float = 0.18f,
@@ -353,6 +364,7 @@ fun Modifier.drawLiquidGlass(
     )
     val density = LocalDensity.current
     val insideSource = remember { BooleanArray(1) }
+    var myCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var myWindowPos by remember { mutableStateOf(Offset.Zero) }
     val glassNode = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) RenderNode("liquid_glass_lens") else null
@@ -366,6 +378,7 @@ fun Modifier.drawLiquidGlass(
     return this
         .onGloballyPositioned { coords ->
             if (coords.isAttached) {
+                myCoords = coords
                 myWindowPos = coords.positionInWindow()
             }
         }
@@ -391,17 +404,18 @@ fun Modifier.drawLiquidGlass(
         .drawWithContent {
             val w = size.width.roundToInt().coerceAtLeast(1)
             val h = size.height.roundToInt().coerceAtLeast(1)
-            val refH = with(density) { refractionHeight.toPx() }
-            val refAmt = with(density) { -refractionAmount.toPx() }
-            val blurPx = with(density) { blurRadius.toPx() }.coerceAtLeast(0.5f)
+            val maxLensDim = (min(size.width, size.height) * 0.45f).coerceAtLeast(1f)
+            val refH = with(density) { refractionHeight.toPx() }.coerceIn(1f, maxLensDim)
+            val refAmt = -with(density) { refractionAmount.toPx() }.coerceIn(1f, maxLensDim * 1.15f)
+            val blurPx = with(density) { blurRadius.toPx() }.coerceAtLeast(0.25f)
             val radii = extractCornerRadii(shape, size, density)
-            val angle = activeTouch?.lightAngle ?: (-PI.toFloat() * 0.35f)
-            val lightDirX = cos(angle)
-            val lightDirY = sin(angle)
 
-            // Se este vidro e desenhado DENTRO da gravacao do backdrop, ele nunca usa o RenderNode
-            // (evita ciclo vidro -> backdrop -> vidro, que fecha o app).
-            if (backdrop?.recordingSource == true) insideSource[0] = true
+            // Impede ciclo RenderNode (se este vidro estiver dentro do próprio backdrop que captura)
+            if (backdrop?.recordingSource == true || isDescendantOfBackdropSource(myCoords, backdrop?.sourceCoordinates)) {
+                insideSource[0] = true
+            } else {
+                insideSource[0] = false
+            }
 
             val srcNode = backdrop?.contentNode
             val canRenderNode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -425,13 +439,15 @@ fun Modifier.drawLiquidGlass(
                         glassNode.endRecording()
                     }
 
-                    // 1) Vibrancy leve + Blur bem leve
-                    val cm = ColorMatrix().apply { setSaturation(1.15f) }
-                    val blurEff = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.MIRROR)
+                    // 1) Vibrancy leve + Blur bem mais sutil
+                    val cm = ColorMatrix().apply { setSaturation(1.12f) }
+                    val blurEff = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP)
                     val vibrantBlur = RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(cm), blurEff)
 
                     // 2) Refração Óptica AGSL em Tempo Real (Android 13+)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && runtimeShader != null) {
+                        // Aplica um leve transparência no tint para nunca criar efeito esbranquiçado nas curvas
+                        val safeTintAlpha = tint.alpha.coerceAtMost(0.05f)
                         runtimeShader.setFloatUniform("size", size.width, size.height)
                         runtimeShader.setFloatUniform("offset", 0f, 0f)
                         runtimeShader.setFloatUniform("cornerRadii", radii[0], radii[1], radii[2], radii[3])
@@ -441,7 +457,7 @@ fun Modifier.drawLiquidGlass(
                         runtimeShader.setFloatUniform("chromaticAberration", chromaticAberration)
                         runtimeShader.setFloatUniform("dimAmount", animDim)
                         runtimeShader.setFloatUniform("pressIntensity", press)
-                        runtimeShader.setFloatUniform("tintColor", tint.red, tint.green, tint.blue, tint.alpha)
+                        runtimeShader.setFloatUniform("tintColor", tint.red, tint.green, tint.blue, safeTintAlpha)
 
                         val shaderEff = RenderEffect.createRuntimeShaderEffect(runtimeShader, "content")
                         glassNode.setRenderEffect(RenderEffect.createChainEffect(shaderEff, vibrantBlur))
@@ -452,9 +468,9 @@ fun Modifier.drawLiquidGlass(
                     drawContext.canvas.nativeCanvas.drawRenderNode(glassNode)
                     drawnWithLens = true
 
-                    // Android 12 (sem AGSL): aplica tint e dim por cima do RenderNode
+                    // Android 12 (sem AGSL): aplica tint suave e dim por cima do RenderNode
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                        drawRect(tint)
+                        drawRect(tint.copy(alpha = tint.alpha.coerceAtMost(0.05f)))
                         drawRect(Color.Black.copy(alpha = animDim))
                     }
                 } catch (e: Throwable) {
@@ -463,9 +479,9 @@ fun Modifier.drawLiquidGlass(
             }
 
             if (!drawnWithLens) {
-                // Fallback seguro (sem refração): translúcido simples
+                // Fallback seguro (sem refração): translúcido escuro sem borda branca
                 drawRect(Color(0xFF1E1E24).copy(alpha = fallbackAlpha))
-                drawRect(tint)
+                drawRect(tint.copy(alpha = tint.alpha.coerceAtMost(0.05f)))
                 drawRect(Color.Black.copy(alpha = animDim))
             }
 
@@ -502,10 +518,10 @@ fun LiquidGlassCircle(
     size: Dp = 42.dp,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    tint: Color = Color.White.copy(alpha = 0.03f),
-    dim: Float = 0.04f,
-    refractionHeight: Dp = (size.value * 0.20f).dp,
-    refractionAmount: Dp = (size.value * 0.32f).dp,
+    tint: Color = Color.White.copy(alpha = 0.015f),
+    dim: Float = 0.05f,
+    refractionHeight: Dp = (size.value * 0.18f).dp,
+    refractionAmount: Dp = (size.value * 0.26f).dp,
     content: @Composable BoxScope.() -> Unit
 ) {
     val touch = rememberLiquidTouchState()
@@ -544,10 +560,10 @@ fun LiquidGlassPill(
     modifier: Modifier = Modifier,
     height: Dp = 48.dp,
     cornerRadius: Dp = 999.dp,
-    tint: Color = Color.White.copy(alpha = 0.03f),
-    dim: Float = 0.04f,
-    refractionHeight: Dp = 10.dp,
-    refractionAmount: Dp = 16.dp,
+    tint: Color = Color.White.copy(alpha = 0.015f),
+    dim: Float = 0.05f,
+    refractionHeight: Dp = 8.dp,
+    refractionAmount: Dp = 13.dp,
     horizontalPadding: Dp = 20.dp,
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Center,
     content: @Composable RowScope.() -> Unit
@@ -610,13 +626,13 @@ fun LiquidDropdownMenu(
                     .widthIn(min = 225.dp, max = 270.dp)
                     .drawLiquidGlass(
                         backdrop = null,
-                        fallbackAlpha = 0.5f,
+                        fallbackAlpha = 0.52f,
                         shape = shape,
-                        refractionHeight = 14.dp,
-                        refractionAmount = 22.dp,
-                        blurRadius = 3.dp,
-                        dim = 0.14f,
-                        tint = Color.White.copy(alpha = 0.05f)
+                        refractionHeight = 12.dp,
+                        refractionAmount = 18.dp,
+                        blurRadius = 2.dp,
+                        dim = 0.16f,
+                        tint = Color.White.copy(alpha = 0.03f)
                     )
                     .padding(vertical = 8.dp),
                 content = content
@@ -639,7 +655,7 @@ fun LiquidDropdownItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(touch.gestureModifier)
-                .background(Color.White.copy(alpha = touch.pressProgress * 0.14f))
+                .background(Color.White.copy(alpha = touch.pressProgress * 0.12f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -659,7 +675,7 @@ fun LiquidDropdownItem(
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp)
                     .height(0.6.dp)
-                    .background(Color.White.copy(alpha = 0.14f))
+                    .background(Color.White.copy(alpha = 0.12f))
             )
         }
     }

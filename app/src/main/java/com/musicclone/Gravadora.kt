@@ -25,6 +25,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.*
 import org.json.*
 import java.net.URL
+import androidx.compose.ui.text.style.TextAlign
 
 data class LabelArtist(val provider:String,val id:String,val name:String,val url:String="",val photo:String="")
 private data class LabelInfo(val id:String,val name:String,val instagram:String,val tiktok:String,val x:String,val square:String?,val wide:String?)

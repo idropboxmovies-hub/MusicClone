@@ -24,6 +24,7 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
+import androidx.compose.ui.text.style.TextAlign
 
 data class LabelArtist(val id: String, val name: String, val genre: String = "", val provider: String = "itunes", val link: String = "")
 data class LabelData(
